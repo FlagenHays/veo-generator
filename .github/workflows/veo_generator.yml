@@ -17,17 +17,19 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install google-genai requests
+        run: |
+          pip install google-genai requests
 
       - name: Run Python Generator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          RAW_PROMPT: ${{ github.event.client_payload.prompt }}
-          RAW_IMAGES: ${{ toJson(github.event.client_payload.images) }}
         run: |
-          python scripts/generate_veo.py "$GEMINI_API_KEY" "$RAW_PROMPT" "$RAW_IMAGES"
+          python scripts/generate_veo.py \
+          "$GEMINI_API_KEY" \
+          "${{ github.event.client_payload.prompt }}" \
+          '${{ toJson(github.event.client_payload.images) }}'
 
-      - name: Send Video Back
+      - name: Send Video Back to Hostinger
         if: success()
         run: |
           curl -X POST "${{ github.event.client_payload.webhook_url }}" \
