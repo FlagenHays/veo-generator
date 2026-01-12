@@ -15,6 +15,7 @@ def generate_video_with_refs():
     prompt = sys.argv[2]
     
     try:
+        # On décode le JSON envoyé par GitHub Actions
         image_urls = json.loads(sys.argv[3])
     except Exception as e:
         print(f"Erreur lors du parsing JSON des images: {e}")
@@ -35,12 +36,12 @@ def generate_video_with_refs():
                         reference_type="ASSET"
                     )
                     reference_images.append(ref)
-                    print(f"Image ajoutée: {url}")
+                    print(f"Image ajoutée avec succès: {url}")
             except Exception as e:
                 print(f"Impossible de charger l'image {url}: {e}")
 
     # 3. Lancement de la génération (Veo 3.1 Preview)
-    print(f"Lancement de la génération avec le prompt: {prompt[:50]}...")
+    print(f"Lancement de la génération Veo avec le prompt: {prompt[:100]}...")
     
     operation = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -52,31 +53,36 @@ def generate_video_with_refs():
         ),
     )
 
-    # 4. Attente de la fin du traitement
+    # 4. Attente de la fin du traitement (Boucle de vérification)
     while not operation.done:
-        print("Génération en cours (Veo travaille)...")
+        print("Génération en cours (Veo travaille toujours)...")
         time.sleep(15)
         operation = client.operations.get(operation)
 
-    # 5. Sauvegarde de la vidéo
+    # 5. Sauvegarde de la vidéo (Correction URI)
     try:
-        # Récupération du résultat
-        video_data = operation.result.generated_videos[0]
+        # Récupération de l'objet vidéo généré
+        generated_video = operation.result.generated_videos[0]
         
-        # Le SDK permet souvent d'accéder aux bytes via l'objet vidéo
-        # Sinon, on télécharge via le nom du fichier généré
-        print(f"Téléchargement de la vidéo finale...")
+        print(f"Téléchargement de la vidéo finale depuis l'URI...")
         
-        # Méthode la plus stable pour le SDK actuel :
+        # Utilisation de l'URI pour le téléchargement (Correction du bug 'name')
+        file_uri = generated_video.video.uri
+        
+        # Téléchargement du contenu binaire
+        file_content = client.files.download(file=file_uri)
+        
+        # Écriture du fichier sur le disque du runner GitHub
         with open(output_filename, "wb") as f:
-            # On récupère les bytes du fichier généré sur Google Cloud
-            file_content = client.files.download(file=video_data.video.name)
             f.write(file_content)
             
-        print(f"Succès ! Vidéo sauvegardée sous {output_filename}")
+        print(f"Succès ! Vidéo sauvegardée localement : {output_filename}")
         
     except Exception as e:
-        print(f"Erreur lors de la récupération de la vidéo: {e}")
+        print(f"Erreur lors de la récupération ou sauvegarde de la vidéo: {e}")
+        # Optionnel: Affiche les attributs disponibles en cas de nouvel échec
+        if 'generated_video' in locals():
+             print(f"Attributs disponibles dans video: {dir(generated_video.video)}")
         sys.exit(1)
 
 if __name__ == "__main__":
