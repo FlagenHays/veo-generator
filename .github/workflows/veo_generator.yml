@@ -22,11 +22,12 @@ jobs:
       - name: Run Python Generator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # On stocke les données dans des variables d'env pour éviter les erreurs de shell
+          RAW_PROMPT: ${{ github.event.client_payload.prompt }}
+          RAW_IMAGES: ${{ toJson(github.event.client_payload.images) }}
         run: |
-          python scripts/generate_veo.py \
-          "$GEMINI_API_KEY" \
-          "${{ github.event.client_payload.prompt }}" \
-          '${{ toJson(github.event.client_payload.images) }}'
+          # On appelle le script sans passer les arguments directement dans la ligne de commande
+          python scripts/generate_veo.py "$GEMINI_API_KEY" "$RAW_PROMPT" "$RAW_IMAGES"
 
       - name: Send Video Back to Hostinger
         if: success()
