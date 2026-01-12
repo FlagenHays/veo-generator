@@ -50,7 +50,7 @@ def generate_video_with_refs():
             config=types.GenerateVideosConfig(
                 reference_images=reference_images if reference_images else None,
                 duration_seconds=8,
-                aspect_ratio="9:16"
+                aspect_ratio="16:9"
             ),
         )
 
