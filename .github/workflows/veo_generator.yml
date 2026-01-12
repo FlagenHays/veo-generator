@@ -27,7 +27,7 @@ jobs:
         run: |
           python scripts/generate_veo.py "$GEMINI_API_KEY" "$RAW_PROMPT" "$RAW_IMAGES"
 
-      - name: Send Video Back to Hostinger
+      - name: Send Video Back
         if: success()
         run: |
           curl -X POST "${{ github.event.client_payload.webhook_url }}" \
