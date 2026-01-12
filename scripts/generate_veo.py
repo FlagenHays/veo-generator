@@ -23,19 +23,20 @@ def generate_video_with_refs():
     output_filename = "final_video.mp4"
     client = genai.Client(api_key=api_key)
     
-    # 1. Préparation des images de référence (Correction stricte Pydantic)
+    # 1. Préparation des images de référence (Correction pour Pydantic)
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
             try:
                 img_res = requests.get(url, timeout=15)
                 if img_res.status_code == 200:
-                    # Utilisation d'un dict {'bytes': ...} pour contourner la validation stricte
+                    # Utilisation explicite de Part.from_bytes pour éviter l'erreur de validation
+                    image_part = types.Part.from_bytes(data=img_res.content, mime_type="image/jpeg")
                     reference_images.append(types.VideoGenerationReferenceImage(
-                        image={"bytes": img_res.content},
+                        image=image_part,
                         reference_type="ASSET"
                     ))
-                    print(f"Image chargée: {url}")
+                    print(f"Image chargée avec succès: {url}")
             except Exception as e:
                 print(f"Erreur image {url}: {e}")
 
@@ -48,7 +49,7 @@ def generate_video_with_refs():
             config=types.GenerateVideosConfig(
                 reference_images=reference_images if reference_images else None,
                 duration_seconds=8,
-                aspect_ratio="9:16"
+                aspect_ratio="16:9"
             ),
         )
 
@@ -59,16 +60,18 @@ def generate_video_with_refs():
         video_result = operation.result.generated_videos[0].video
         
         # 3. ÉTAPE 2: Extensions pour atteindre 22s (8s + 8s + 8s)
-        current_video = video_result
+        current_video_uri = video_result.uri
 
         for i in range(2):
             print(f"Lancement Extension {i+1}...")
-            # On passe uniquement l'URI dans un dictionnaire pour éviter 'Extra inputs'
+            # On passe l'objet Video avec uniquement l'URI pour éviter 'Extra inputs'
+            video_input = types.Video(uri=current_video_uri)
+            
             op_ext = client.models.generate_videos(
                 model="veo-3.1-generate-preview",
                 prompt=prompt,
                 config=types.GenerateVideosConfig(
-                    video={"uri": current_video.uri}, 
+                    video=video_input, 
                     duration_seconds=8
                 ),
             )
@@ -76,11 +79,11 @@ def generate_video_with_refs():
                 time.sleep(15)
                 op_ext = client.operations.get(op_ext)
             
-            current_video = op_ext.result.generated_videos[0].video
+            current_video_uri = op_ext.result.generated_videos[0].video.uri
 
         # 4. Sauvegarde finale
         print("Téléchargement de la vidéo finale...")
-        file_content = client.files.download(file=current_video.uri)
+        file_content = client.files.download(file=current_video_uri)
         with open(output_filename, "wb") as f:
             f.write(file_content)
         print(f"Succès: {output_filename}")
