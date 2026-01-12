@@ -1,4 +1,5 @@
 name: Veo Video Generator
+
 on:
   repository_dispatch:
     types: [trigger_veo_generation]
@@ -15,8 +16,9 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install SDK
-        run: pip install google-genai requests
+      - name: Install Dependencies
+        run: |
+          pip install google-genai requests
 
       - name: Run Python Generator
         env:
@@ -25,9 +27,10 @@ jobs:
           python scripts/generate_veo.py \
           "$GEMINI_API_KEY" \
           "${{ github.event.client_payload.prompt }}" \
-          '${{ github.event.client_payload.images }}'
+          '${{ toJson(github.event.client_payload.images) }}'
 
       - name: Send Video Back to Hostinger
+        if: success()
         run: |
           curl -X POST "${{ github.event.client_payload.webhook_url }}" \
           -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
