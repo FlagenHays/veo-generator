@@ -2,7 +2,6 @@ import time
 import sys
 import json
 import requests
-import os
 from google import genai
 from google.genai import types
 
@@ -23,16 +22,15 @@ def generate_video_with_refs():
     output_filename = "final_video.mp4"
     client = genai.Client(api_key=api_key)
     
-    # 1. Préparation des images de référence
+    # 1. Préparation des images de référence (Format dictionnaire pour éviter validation error)
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
             try:
                 img_res = requests.get(url, timeout=15)
                 if img_res.status_code == 200:
-                    # Utilisation stricte du constructeur
                     reference_images.append(types.VideoGenerationReferenceImage(
-                        image=types.Image(bytes=img_res.content),
+                        image={"bytes": img_res.content},
                         reference_type="ASSET"
                     ))
                     print(f"Image chargée: {url}")
@@ -48,7 +46,7 @@ def generate_video_with_refs():
             config=types.GenerateVideosConfig(
                 reference_images=reference_images if reference_images else None,
                 duration_seconds=8,
-                aspect_ratio="16:9"
+                aspect_ratio="9:16"
             ),
         )
 
@@ -56,23 +54,20 @@ def generate_video_with_refs():
             time.sleep(15)
             operation = client.operations.get(operation)
 
-        # Récupération du résultat de la phase 1
+        # Récupération de l'objet vidéo
         video_result = operation.result.generated_videos[0].video
         
         # 3. ÉTAPE 2: Extensions pour atteindre 22s
-        # Note: Pour l'extension, on passe uniquement le 'name' de la vidéo ou l'objet épuré
         current_video = video_result
 
         for i in range(2):
             print(f"Lancement Extension {i+1}...")
-            # On crée un nouvel objet Video épuré pour éviter l'erreur "Extra inputs"
-            video_input = types.Video(uri=current_video.uri)
-            
+            # TRÈS IMPORTANT: On passe un dictionnaire avec l'URI pour éviter 'Extra inputs'
             op_ext = client.models.generate_videos(
                 model="veo-3.1-generate-preview",
-                prompt=prompt, # Le prompt doit être répété pour la cohérence
+                prompt=prompt,
                 config=types.GenerateVideosConfig(
-                    video=video_input, 
+                    video={"uri": current_video.uri}, 
                     duration_seconds=8
                 ),
             )
