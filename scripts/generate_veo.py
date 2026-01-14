@@ -7,16 +7,14 @@ from google.genai import types
 
 def generate_video_with_refs():
     if len(sys.argv) < 4:
-        print("Erreur: Arguments manquants (API_KEY, PROMPT, IMAGES_JSON)")
         sys.exit(1)
 
     api_key = sys.argv[1]
-    full_prompt = sys.argv[2] # Le script complet de 22s
+    full_prompt = sys.argv[2]
     image_urls = json.loads(sys.argv[3])
     output_filename = "final_video.mp4"
     client = genai.Client(api_key=api_key)
 
-    # 1. Préparation des images de référence
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
@@ -28,13 +26,12 @@ def generate_video_with_refs():
                         reference_type="ASSET"
                     )
                     reference_images.append(ref)
-                    print(f"Image chargée: {url}")
-            except Exception as e:
-                print(f"Erreur image {url}: {e}")
+            except Exception: pass
 
-    # --- ÉTAPE 1 : GÉNÉRATION INITIALE (0 à 8 secondes) ---
-    print("Étape 1/3: Génération des 8 premières secondes...")
-    prompt_1 = f"START OF COMMERCIAL (0-8s). Voice-over starts now. Full Script: {full_prompt}"
+    # --- ÉTAPE 1 : 0-8s (Focus sur l'Asset) ---
+    print("Étape 1: Initialisation avec images de référence...")
+    # On insiste lourdement sur la fidélité visuelle aux images fournies
+    prompt_1 = f"STRICT VISUAL FIDELITY: Use the EXACT object from reference images. START OF VIDEO (0-8s). Voice-over starts. Full script for context: {full_prompt}"
     
     operation = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -52,10 +49,9 @@ def generate_video_with_refs():
     
     current_video = operation.result.generated_videos[0].video
 
-    # --- ÉTAPE 2 : PREMIÈRE EXTENSION (8 à 15 secondes) ---
-    print("Étape 2/3: Extension vers 15 secondes...")
-    # On dit à l'IA de CONTINUER la voix off sans la reprendre au début
-    prompt_2 = f"CONTINUATION (8-15s). Smoothly continue the French voice-over from where it left off. DO NOT REPEAT the beginning. Script: {full_prompt}"
+    # --- ÉTAPE 2 : 8-15s (Continuation) ---
+    print("Étape 2: Extension médiane...")
+    prompt_2 = f"CONTINUE the scene. KEEP the exact same bag design. DO NOT REPEAT the beginning of the voice-over. Move to the middle part of this script: {full_prompt}"
     
     operation = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -70,10 +66,10 @@ def generate_video_with_refs():
     
     current_video = operation.result.generated_videos[0].video
 
-    # --- ÉTAPE 3 : DEUXIÈME EXTENSION (15 à 22 secondes) ---
-    print("Étape 3/3: Extension finale vers 22 secondes...")
-    # On demande la fin du script et l'animation du logo
-    prompt_3 = f"FINAL PART (15-22s). Finish the French narration and the music. End with a premium logo animation. Script: {full_prompt}"
+    # --- ÉTAPE 3 : 15-22s (Finalisation - On réduit le prompt ici pour éviter la répétition) ---
+    print("Étape 3: Conclusion finale...")
+    # Ici on ne donne QUE la fin du script pour éviter que l'IA ne boucle
+    prompt_3 = f"FINAL 7 SECONDS. End the narration. End the music. Smooth fade out. Use ONLY the end part of the script: {full_prompt[-150:]}"
     
     operation = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -88,14 +84,13 @@ def generate_video_with_refs():
     
     current_video = operation.result.generated_videos[0].video
 
-    # --- TÉLÉCHARGEMENT ---
+    # --- SAUVEGARDE ---
     try:
         file_content = client.files.download(file=current_video.uri)
         with open(output_filename, "wb") as f:
             f.write(file_content)
-        print(f"Succès: Vidéo de 22s enregistrée sous {output_filename}")
+        print("Succès !")
     except Exception as e:
-        print(f"Erreur finale: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
