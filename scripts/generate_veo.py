@@ -10,20 +10,32 @@ def generate_video_with_refs():
         sys.exit(1)
 
     api_key = sys.argv[1]
-    full_prompt = sys.argv[2]
+    full_raw_prompt = sys.argv[2] # Le prompt mixé venant de Laravel
     image_urls = json.loads(sys.argv[3])
     output_filename = "final_video.mp4"
     client = genai.Client(api_key=api_key)
 
-    # --- LOGIQUE DE DÉCOUPAGE DU TEXTE ---
-    # On sépare le texte en 3 parties pour éviter que l'IA ne lise 3 fois la même chose
-    words = full_prompt.split()
-    n = len(words)
-    part1 = " ".join(words[:n//3])
-    part2 = " ".join(words[n//3:2*n//3])
-    part3 = " ".join(words[2*n//3:])
+    # --- EXTRACTION INTELLIGENTE ---
+    # On sépare pour isoler uniquement ce que l'IA doit DIRE
+    try:
+        parts = full_raw_prompt.split('|')
+        scenario = parts[0].replace('SCENARIO:', '').strip()
+        voix_off_complete = parts[1].replace('VOICE-OVER (FRENCH):', '').strip()
+        musique = parts[2].replace('MUSIC:', '').strip() if len(parts) > 2 else ""
+    except:
+        # Fallback si le format est bizarre
+        scenario = full_raw_prompt
+        voix_off_complete = full_raw_prompt
+        musique = ""
 
-    # 1. Chargement des images de référence
+    # Découpage de la VOIX OFF uniquement
+    v_words = voix_off_complete.split()
+    vn = len(v_words)
+    v_part1 = " ".join(v_words[:vn//3])
+    v_part2 = " ".join(v_words[vn//3:2*vn//3])
+    v_part3 = " ".join(v_words[2*vn//3:])
+
+    # 1. Chargement des images
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
@@ -41,31 +53,25 @@ def generate_video_with_refs():
         while not op.done:
             time.sleep(20)
             op = client.operations.get(op)
-        if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
-            return op.result.generated_videos[0].video
-        return None
+        return op.result.generated_videos[0].video if op.result else None
 
     # --- ÉTAPE 1 : 0-8s ---
-    print(f"Étape 1/3: Narration: '{part1[:50]}...'")
-    prompt_1 = f"STRICT VISUAL FIDELITY. Use references. START OF VIDEO. French Voice-over: {part1}"
+    print(f"Étape 1: Narration: {v_part1}")
+    # On donne le scénario en "Instruction visuelle" et la v_part1 en "Voice-over"
+    prompt_1 = f"VISUAL INSTRUCTION: {scenario}. BACKGROUND MUSIC: {musique}. START VIDEO. FRENCH VOICE-OVER TO SPEAK: {v_part1}"
     
     op1 = client.models.generate_videos(
         model="veo-3.1-generate-preview",
         prompt=prompt_1,
-        config=types.GenerateVideosConfig(
-            reference_images=reference_images if reference_images else None,
-            duration_seconds=8,
-            aspect_ratio="16:9"
-        ),
+        config=types.GenerateVideosConfig(reference_images=reference_images, duration_seconds=8, aspect_ratio="16:9"),
     )
     current_video = wait_for_op(op1)
-    if not current_video: sys.exit(1)
-
-    time.sleep(40) # Pause Quota
+    
+    time.sleep(40) # Quota
 
     # --- ÉTAPE 2 : 8-15s ---
-    print(f"Étape 2/3: Narration: '{part2[:50]}...'")
-    prompt_2 = f"CONTINUE VIDEO. KEEP SAME DESIGN. Smoothly continue French narration with ONLY these words: {part2}"
+    print(f"Étape 2: Narration: {v_part2}")
+    prompt_2 = f"CONTINUE VISUALS: {scenario}. DO NOT REPEAT PREVIOUS WORDS. FRENCH VOICE-OVER TO SPEAK ONLY: {v_part2}"
     
     op2 = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -74,13 +80,12 @@ def generate_video_with_refs():
         config=types.GenerateVideosConfig(resolution="720p")
     )
     current_video = wait_for_op(op2)
-    if not current_video: sys.exit(1)
 
-    time.sleep(40) # Pause Quota
+    time.sleep(40) # Quota
 
     # --- ÉTAPE 3 : 15-22s ---
-    print(f"Étape 3/3: Narration: '{part3[:50]}...'")
-    prompt_3 = f"FINAL PART. Finish video. End French narration with ONLY these words: {part3}. Add logo animation."
+    print(f"Étape 3: Narration: {v_part3}")
+    prompt_3 = f"FINAL VISUALS: {scenario}. END VIDEO. FRENCH VOICE-OVER TO SPEAK ONLY: {v_part3}"
     
     op3 = client.models.generate_videos(
         model="veo-3.1-generate-preview",
@@ -89,13 +94,12 @@ def generate_video_with_refs():
         config=types.GenerateVideosConfig(resolution="720p")
     )
     current_video = wait_for_op(op3)
-    if not current_video: sys_exit(1)
 
     # --- SAUVEGARDE ---
     file_content = client.files.download(file=current_video.uri)
     with open(output_filename, "wb") as f:
         f.write(file_content)
-    print("Succès ! Voix off fluide sans répétition.")
+    print("Succès ! La voix off est maintenant isolée du scénario.")
 
 if __name__ == "__main__":
     generate_video_with_refs()
