@@ -20,14 +20,20 @@ jobs:
         run: |
           pip install google-genai requests
 
+      - name: Create Payload File
+        run: |
+          cat <<EOF > payload.json
+          {
+            "prompt": ${{ toJson(github.event.client_payload.prompt) }},
+            "images": ${{ toJson(github.event.client_payload.images) }}
+          }
+          EOF
+      
       - name: Run Python Generator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python scripts/generate_veo.py \
-          "$GEMINI_API_KEY" \
-          "${{ github.event.client_payload.prompt }}" \
-          '${{ toJson(github.event.client_payload.images) }}'
+          python scripts/generate_veo.py "$GEMINI_API_KEY"
 
       - name: Send Video Back to Hostinger
         if: success()
