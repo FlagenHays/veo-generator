@@ -37,12 +37,21 @@ def split_text_into_three(text):
     return part1, part2, part3
 
 def generate_video_with_refs():
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 2:
+        print("Clé API manquante")
         sys.exit(1)
-
+    
     api_key = sys.argv[1]
-    full_prompt = sys.argv[2]
-    image_urls = json.loads(sys.argv[3])
+    
+    try:
+        with open("payload.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("Erreur lecture payload.json:", e)
+        sys.exit(1)
+    
+    full_prompt = data.get("prompt", "")
+    image_urls = data.get("images", [])
     output_filename = "final_video.mp4"
     client = genai.Client(api_key=api_key)
 
