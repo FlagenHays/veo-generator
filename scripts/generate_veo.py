@@ -92,7 +92,7 @@ def generate_video_with_refs():
     )
     
     op1 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
+        model="veo-3.1-fast-generate-preview",
         prompt=prompt_1,
         config=types.GenerateVideosConfig(
             reference_images=reference_images if reference_images else None,
@@ -113,7 +113,7 @@ def generate_video_with_refs():
     )
     
     op2 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
+        model="veo-3.1-fast-generate-preview",
         video=current_video,
         prompt=prompt_2,
         config=types.GenerateVideosConfig(resolution="720p")
@@ -131,7 +131,7 @@ def generate_video_with_refs():
     )
     
     op3 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
+        model="veo-3.1-fast-generate-preview",
         video=current_video,
         prompt=prompt_3,
         config=types.GenerateVideosConfig(resolution="720p")
