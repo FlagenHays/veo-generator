@@ -68,26 +68,11 @@ def generate_video_with_refs():
             except Exception: pass
 
     def wait_for_op(op):
-        print("Attente de la génération vidéo...")
-    
-        while True:
-            op = client.operations.get(op.name)
-    
-            if op.done:
-                break
-    
-            print("Toujours en cours...")
-            time.sleep(10)
-    
-        if op.error:
-            print("Erreur côté API :")
-            print(op.error)
-            return None
-    
-        if hasattr(op.response, "generated_videos") and op.response.generated_videos:
-            return op.response.generated_videos[0].video
-    
-        print("Aucune vidéo générée.")
+        while not op.done:
+            time.sleep(20)
+            op = client.operations.get(op)
+        if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
+            return op.result.generated_videos[0].video
         return None
 
     # --- ÉTAPE 1 : 0-8s (Partie 1 du texte) ---
@@ -97,21 +82,15 @@ def generate_video_with_refs():
         f"AUDIO: The narrator speaks ONLY this: '{v1}'"
     )
     
-    try:
-        op1 = client.models.generate_videos(
-            model="veo-3.1-generate-preview",
-            prompt=prompt_1,
-            config=types.GenerateVideosConfig(
-                reference_images=reference_images if reference_images else None,
-                duration_seconds=8,
-                aspect_ratio="16:9"
-            ),
-        )
-    except Exception as e:
-        print("Erreur génération vidéo étape 1:")
-        print(e)
-        sys.exit(1)
-        
+    op1 = client.models.generate_videos(
+        model="veo-3.1-generate-preview",
+        prompt=prompt_1,
+        config=types.GenerateVideosConfig(
+            reference_images=reference_images if reference_images else None,
+            duration_seconds=8,
+            aspect_ratio="16:9"
+        ),
+    )
     current_video = wait_for_op(op1)
     if not current_video: sys.exit(1)
 
