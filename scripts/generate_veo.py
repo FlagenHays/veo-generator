@@ -82,15 +82,21 @@ def generate_video_with_refs():
         f"AUDIO: The narrator speaks ONLY this: '{v1}'"
     )
     
-    op1 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
-        prompt=prompt_1,
-        config=types.GenerateVideosConfig(
-            reference_images=reference_images if reference_images else None,
-            duration_seconds=8,
-            aspect_ratio="16:9"
-        ),
-    )
+    try:
+        op1 = client.models.generate_videos(
+            model="veo-3.1-generate-preview",
+            prompt=prompt_1,
+            config=types.GenerateVideosConfig(
+                reference_images=reference_images if reference_images else None,
+                duration_seconds=8,
+                aspect_ratio="16:9"
+            ),
+        )
+    except Exception as e:
+        print("Erreur génération vidéo étape 1:")
+        print(e)
+        sys.exit(1)
+        
     current_video = wait_for_op(op1)
     if not current_video: sys.exit(1)
 
