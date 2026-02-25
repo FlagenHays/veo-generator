@@ -29,23 +29,40 @@ def split_text_into_two(text):
     n = len(words)
     if n == 0:
         return "", ""
-
-    # On donne un peu plus à la première partie (55% / 45% environ)
-    split_point = int(n * 0.57)   # → ~8s / ~7s en narration naturelle
-
+    # Ratio ~57% / 43% pour approcher 8s / 7s
+    split_point = int(n * 0.57)
     part1 = " ".join(words[:split_point])
     part2 = " ".join(words[split_point:])
-
     return part1, part2
 
 
-def wait_for_op(client, op):
-    while not op.done:
-        time.sleep(20)
-        op = client.operations.get(op.name)  # ← correction probable : op.name
+def wait_for_op(client, operation_name: str, timeout_sec=900):  # 15 min max
+    """Poll une opération longue jusqu'à finition"""
+    start_time = time.time()
+    while True:
+        if time.time() - start_time > timeout_sec:
+            raise TimeoutError(f"Timeout après {timeout_sec}s pour {operation_name}")
+
+        op = client.operations.get(operation_name)
+        
+        if op.done:
+            break
+        
+        print(f"En attente... ({int(time.time() - start_time)}s écoulés)")
+        time.sleep(15)  # 15s au lieu de 20s pour plus de réactivité
+
+    if op.error:
+        raise RuntimeError(f"Erreur dans l'opération : {op.error}")
+
+    # Résultat généralement dans .response pour generate_videos
+    if hasattr(op, 'response') and op.response and op.response.generated_videos:
+        return op.response.generated_videos[0].video
+
+    # Fallback si c'est dans .result (rare mais possible selon versions SDK)
     if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
         return op.result.generated_videos[0].video
-    return None
+
+    raise ValueError("Opération terminée mais aucune vidéo trouvée dans response/result")
 
 
 def generate_video_with_refs():
@@ -61,7 +78,6 @@ def generate_video_with_refs():
         image_urls = []
 
     output_filename = "final_video_15s.mp4"
-
     client = genai.Client(api_key=api_key)
 
     # 1. Extraction du prompt
@@ -70,11 +86,10 @@ def generate_video_with_refs():
 
     # Division voix off en DEUX parties
     v1, v2 = split_text_into_two(extracted["voice_over"])
-
     print(f"Partie 1 (≈8s) : {v1}")
     print(f"Partie 2 (≈7s) : {v2}")
 
-    # 2. Chargement des images de référence (max 3)
+    # 2. Chargement images de référence (max 3)
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
@@ -86,11 +101,11 @@ def generate_video_with_refs():
                         reference_type="ASSET"
                     )
                     reference_images.append(ref)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Erreur chargement image {url}: {e}")
 
     # ───────────────────────────────────────────────
-    # ÉTAPE 1 : 0–8 secondes
+    # ÉTAPE 1 : Génération initiale 0–8s (1080p si possible)
     # ───────────────────────────────────────────────
     print("\nGénération partie 1 (0–8s)...")
     prompt_1 = (
@@ -98,25 +113,26 @@ def generate_video_with_refs():
         f"AUDIO: The narrator speaks ONLY this text: '{v1}'"
     )
 
-    op1 = client.models.generate_videos(
+    op_name_1 = client.models.generate_videos(
         model="veo-3.1-fast-generate-preview",
         prompt=prompt_1,
         config=types.GenerateVideosConfig(
             reference_images=reference_images if reference_images else None,
             duration_seconds=8,
-            aspect_ratio="16:9"
+            aspect_ratio="16:9",
+            resolution="1080p",  # Essaie 1080p ici (souvent supporté en génération initiale)
         ),
     )
 
-    current_video = wait_for_op(client, op1)
+    current_video = wait_for_op(client, op_name_1)
     if not current_video:
         print("Échec génération partie 1")
         sys.exit(1)
 
-    time.sleep(30)  # ← un peu moins long que 40s, à ajuster selon observation
+    time.sleep(20)  # Petite pause avant extension
 
     # ───────────────────────────────────────────────
-    # ÉTAPE 2 : Extension 8–15 secondes
+    # ÉTAPE 2 : Extension 8–15s (720p – limite courante pour extensions)
     # ───────────────────────────────────────────────
     print("\nExtension partie 2 (8–15s)...")
     prompt_2 = (
@@ -124,23 +140,23 @@ def generate_video_with_refs():
         f"AUDIO: Continue narration seamlessly with ONLY this: '{v2}'"
     )
 
-    op2 = client.models.generate_videos(
+    op_name_2 = client.models.generate_videos(
         model="veo-3.1-fast-generate-preview",
         video=current_video,
         prompt=prompt_2,
         config=types.GenerateVideosConfig(
-            resolution="720p",
-            # duration_seconds=7  # ← souvent ignoré en mode extension, le modèle décide
+            resolution="720p",   # Garde 720p pour éviter erreurs en extension
+            # duration_seconds=7 → souvent ignoré en mode extension
         ),
     )
 
-    current_video = wait_for_op(client, op2)
+    current_video = wait_for_op(client, op_name_2)
     if not current_video:
         print("Échec extension partie 2")
         sys.exit(1)
 
     # ───────────────────────────────────────────────
-    # Téléchargement du résultat final
+    # Téléchargement final
     # ───────────────────────────────────────────────
     try:
         print("\nTéléchargement de la vidéo finale...")
@@ -149,7 +165,7 @@ def generate_video_with_refs():
             f.write(file_content)
         print(f"Succès ! Vidéo sauvegardée : {output_filename}")
     except Exception as e:
-        print("Erreur lors du téléchargement :", e)
+        print(f"Erreur lors du téléchargement : {e}")
         sys.exit(1)
 
 
