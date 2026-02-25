@@ -2,9 +2,9 @@ import time
 import sys
 import json
 import requests
-import re
 from google import genai
 from google.genai import types
+
 
 def extract_parts(full_prompt):
     """Découpe le prompt en utilisant le délimiteur ###"""
@@ -22,38 +22,59 @@ def extract_parts(full_prompt):
         parts["voice_over"] = full_prompt
     return parts
 
-def split_text_into_three(text):
-    """Divise le texte en 3 parties égales basées sur le nombre de mots"""
+
+def split_text_into_two(text):
+    """Divise le texte en 2 parties (première un peu plus longue)"""
     words = text.split()
     n = len(words)
     if n == 0:
-        return "", "", ""
-    
-    # Calcul des points de coupure
-    part1 = " ".join(words[0 : n//3])
-    part2 = " ".join(words[n//3 : 2*n//3])
-    part3 = " ".join(words[2*n//3 : ])
-    
-    return part1, part2, part3
+        return "", ""
+
+    # On donne un peu plus à la première partie (55% / 45% environ)
+    split_point = int(n * 0.57)   # → ~8s / ~7s en narration naturelle
+
+    part1 = " ".join(words[:split_point])
+    part2 = " ".join(words[split_point:])
+
+    return part1, part2
+
+
+def wait_for_op(client, op):
+    while not op.done:
+        time.sleep(20)
+        op = client.operations.get(op.name)  # ← correction probable : op.name
+    if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
+        return op.result.generated_videos[0].video
+    return None
+
 
 def generate_video_with_refs():
     if len(sys.argv) < 4:
+        print("Usage: python script.py <api_key> \"prompt complet\" '[\"url1\",\"url2\"]'")
         sys.exit(1)
 
     api_key = sys.argv[1]
     full_prompt = sys.argv[2]
-    image_urls = json.loads(sys.argv[3])
-    output_filename = "final_video.mp4"
+    try:
+        image_urls = json.loads(sys.argv[3])
+    except:
+        image_urls = []
+
+    output_filename = "final_video_15s.mp4"
+
     client = genai.Client(api_key=api_key)
 
-    # 1. Extraction et Segmentation du texte
+    # 1. Extraction du prompt
     extracted = extract_parts(full_prompt)
     visual_scenario = extracted["scenario"]
-    
-    # Division de la voix off en 3 parties pour éviter les répétitions
-    v1, v2, v3 = split_text_into_three(extracted["voice_over"])
 
-    # 2. Chargement des images de référence
+    # Division voix off en DEUX parties
+    v1, v2 = split_text_into_two(extracted["voice_over"])
+
+    print(f"Partie 1 (≈8s) : {v1}")
+    print(f"Partie 2 (≈7s) : {v2}")
+
+    # 2. Chargement des images de référence (max 3)
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
@@ -65,25 +86,20 @@ def generate_video_with_refs():
                         reference_type="ASSET"
                     )
                     reference_images.append(ref)
-            except Exception: pass
+            except Exception:
+                pass
 
-    def wait_for_op(op):
-        while not op.done:
-            time.sleep(20)
-            op = client.operations.get(op)
-        if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
-            return op.result.generated_videos[0].video
-        return None
-
-    # --- ÉTAPE 1 : 0-8s (Partie 1 du texte) ---
-    print(f"Étape 1/3 - Narration: {v1}")
+    # ───────────────────────────────────────────────
+    # ÉTAPE 1 : 0–8 secondes
+    # ───────────────────────────────────────────────
+    print("\nGénération partie 1 (0–8s)...")
     prompt_1 = (
-        f"STRICT INSTRUCTION: Commercial Part 1. VISUAL: {visual_scenario}. "
-        f"AUDIO: The narrator speaks ONLY this: '{v1}'"
+        f"STRICT INSTRUCTION: Commercial beginning. VISUAL: {visual_scenario}. "
+        f"AUDIO: The narrator speaks ONLY this text: '{v1}'"
     )
-    
+
     op1 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
+        model="veo-3.1-fast-generate-preview",
         prompt=prompt_1,
         config=types.GenerateVideosConfig(
             reference_images=reference_images if reference_images else None,
@@ -91,53 +107,51 @@ def generate_video_with_refs():
             aspect_ratio="16:9"
         ),
     )
-    current_video = wait_for_op(op1)
-    if not current_video: sys.exit(1)
 
-    time.sleep(40)
+    current_video = wait_for_op(client, op1)
+    if not current_video:
+        print("Échec génération partie 1")
+        sys.exit(1)
 
-    # --- ÉTAPE 2 : 8-15s (Partie 2 du texte) ---
-    print(f"Étape 2/3 - Narration: {v2}")
+    time.sleep(30)  # ← un peu moins long que 40s, à ajuster selon observation
+
+    # ───────────────────────────────────────────────
+    # ÉTAPE 2 : Extension 8–15 secondes
+    # ───────────────────────────────────────────────
+    print("\nExtension partie 2 (8–15s)...")
     prompt_2 = (
-        f"CONTINUE SCENE. VISUAL: {visual_scenario}. "
-        f"AUDIO: Continue narration with ONLY this: '{v2}'"
+        f"CONTINUE THE EXACT SAME SCENE SMOOTHLY. VISUAL: {visual_scenario}. "
+        f"AUDIO: Continue narration seamlessly with ONLY this: '{v2}'"
     )
-    
+
     op2 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
+        model="veo-3.1-fast-generate-preview",
         video=current_video,
         prompt=prompt_2,
-        config=types.GenerateVideosConfig(resolution="720p")
+        config=types.GenerateVideosConfig(
+            resolution="720p",
+            # duration_seconds=7  # ← souvent ignoré en mode extension, le modèle décide
+        ),
     )
-    current_video = wait_for_op(op2)
-    if not current_video: sys.exit(1)
 
-    time.sleep(40)
+    current_video = wait_for_op(client, op2)
+    if not current_video:
+        print("Échec extension partie 2")
+        sys.exit(1)
 
-    # --- ÉTAPE 3 : 15-22s (Partie 3 du texte) ---
-    print(f"Étape 3/3 - Narration: {v3}")
-    prompt_3 = (
-        f"FINAL PART. VISUAL: {visual_scenario}. "
-        f"AUDIO: Finish narration with ONLY this: '{v3}'"
-    )
-    
-    op3 = client.models.generate_videos(
-        model="veo-3.1-generate-preview",
-        video=current_video,
-        prompt=prompt_3,
-        config=types.GenerateVideosConfig(resolution="720p")
-    )
-    current_video = wait_for_op(op3)
-    if not current_video: sys.exit(1)
-
-    # --- SAUVEGARDE FINALE ---
+    # ───────────────────────────────────────────────
+    # Téléchargement du résultat final
+    # ───────────────────────────────────────────────
     try:
+        print("\nTéléchargement de la vidéo finale...")
         file_content = client.files.download(file=current_video.uri)
         with open(output_filename, "wb") as f:
             f.write(file_content)
-        print("Succès !")
-    except Exception:
+        print(f"Succès ! Vidéo sauvegardée : {output_filename}")
+    except Exception as e:
+        print("Erreur lors du téléchargement :", e)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     generate_video_with_refs()
