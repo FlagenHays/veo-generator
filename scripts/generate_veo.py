@@ -2,6 +2,7 @@ import time
 import sys
 import json
 import requests
+import math
 from google import genai
 from google.genai import types
 
@@ -23,14 +24,18 @@ def extract_parts(full_prompt):
     return parts
 
 def split_text_into_two(text):
-    """Divise le texte en 2 parties basées sur le nombre de mots"""
+    """
+    Divise le texte en 2 parties basées sur le nombre de mots.
+    Si le total est impair, la première partie reçoit le mot supplémentaire.
+    """
     words = text.split()
     n = len(words)
     if n == 0:
         return "", ""
     
-    # Séparation au milieu
-    mid = n // 2
+    # Calcul du point de milieu : math.ceil assure que si n=15, mid=8
+    mid = math.ceil(n / 2)
+    
     part1 = " ".join(words[:mid])
     part2 = " ".join(words[mid:])
     
@@ -50,7 +55,7 @@ def generate_video_with_refs():
     extracted = extract_parts(full_prompt)
     visual_scenario = extracted["scenario"]
     
-    # Division de la voix off en 2 parties (8s + 7s)
+    # Division optimisée de la voix off (Priorité Partie 1)
     v1, v2 = split_text_into_two(extracted["voice_over"])
 
     # 2. Chargement des images de référence
@@ -76,7 +81,7 @@ def generate_video_with_refs():
         return None
 
     # --- ÉTAPE 1 : 0-8s (Partie 1) ---
-    print(f"Étape 1/2 (8s) - Narration: {v1}")
+    print(f"Étape 1/2 (8s) - Mots: {len(v1.split())} - Narration: {v1}")
     prompt_1 = (
         f"STRICT INSTRUCTION: Commercial Part 1. VISUAL: {visual_scenario}. "
         f"AUDIO: The narrator speaks ONLY this: '{v1}'"
@@ -94,11 +99,10 @@ def generate_video_with_refs():
     current_video = wait_for_op(op1)
     if not current_video: sys.exit(1)
 
-    # Pause pour laisser respirer l'API
     time.sleep(30)
 
     # --- ÉTAPE 2 : 8-15s (Extension finale de 7s) ---
-    print(f"Étape 2/2 (7s) - Narration: {v2}")
+    print(f"Étape 2/2 (7s) - Mots: {len(v2.split())} - Narration: {v2}")
     prompt_2 = (
         f"FINAL PART. CONTINUE SCENE. VISUAL: {visual_scenario}. "
         f"AUDIO: Finish narration with ONLY this: '{v2}'"
