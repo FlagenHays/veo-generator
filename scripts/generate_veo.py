@@ -2,13 +2,11 @@ import time
 import sys
 import json
 import requests
-import base64
 from google import genai
 from google.genai import types
 
 
 def extract_parts(full_prompt):
-    """Découpe le prompt en utilisant le délimiteur ###"""
     parts = {"scenario": "", "voice_over": "", "music": ""}
     segments = full_prompt.split("###")
     for segment in segments:
@@ -25,7 +23,6 @@ def extract_parts(full_prompt):
 
 
 def split_text_into_two(text):
-    """Divise le texte en 2 parties (première un peu plus longue)"""
     words = text.split()
     n = len(words)
     if n == 0:
@@ -36,7 +33,7 @@ def split_text_into_two(text):
     return part1, part2
 
 
-def wait_for_op(client, operation_name: str, timeout_sec=900):
+def wait_for_op(client, operation_name: str, timeout_sec=1200):  # 20 min
     start_time = time.time()
     while True:
         if time.time() - start_time > timeout_sec:
@@ -47,12 +44,12 @@ def wait_for_op(client, operation_name: str, timeout_sec=900):
         print(f"En attente... ({int(time.time() - start_time)}s écoulés)")
         time.sleep(15)
     if op.error:
-        raise RuntimeError(f"Erreur dans l'opération : {op.error}")
+        raise RuntimeError(f"Erreur opération : {op.error}")
     if hasattr(op, 'response') and op.response and op.response.generated_videos:
         return op.response.generated_videos[0].video
     if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
         return op.result.generated_videos[0].video
-    raise ValueError("Opération terminée mais aucune vidéo trouvée dans response/result")
+    raise ValueError("Pas de vidéo dans response/result")
 
 
 def generate_video_with_refs():
@@ -77,30 +74,27 @@ def generate_video_with_refs():
     print(f"Partie 1 (≈8s) : {v1}")
     print(f"Partie 2 (≈7s) : {v2}")
 
-    # Chargement images → correction : base64 data au lieu de bytes
+    # Images : bytes=content (comme ton ancien code qui marchait)
     reference_images = []
     if isinstance(image_urls, list):
         for url in image_urls[:3]:
             try:
                 img_response = requests.get(url, timeout=15)
                 if img_response.status_code == 200:
-                    content = img_response.content
-                    b64_data = base64.b64encode(content).decode('utf-8')
-                    mime_type = "image/png" if url.lower().endswith('.png') else "image/jpeg"
-                    image_obj = types.Image(data=b64_data, mime_type=mime_type)
+                    mime = "image/png" if url.lower().endswith('.png') else "image/jpeg"
                     ref = types.VideoGenerationReferenceImage(
-                        image=image_obj,
+                        image=types.Image(bytes=img_response.content, mime_type=mime),
                         reference_type="ASSET"
                     )
                     reference_images.append(ref)
-                    print(f"Image chargée : {url}")
+                    print(f"Image chargée OK : {url}")
                 else:
-                    print(f"Échec chargement {url} (code {img_response.status_code})")
+                    print(f"Échec chargement {url} (status {img_response.status_code})")
             except Exception as e:
-                print(f"Erreur image {url}: {e}")
+                print(f"Erreur chargement image {url}: {e}")
 
     # ───────────────────────────────────────────────
-    # ÉTAPE 1 : Génération initiale (PAS de resolution → comme avant)
+    # ÉTAPE 1 : Génération initiale → 16:9 pour compatibilité extension
     # ───────────────────────────────────────────────
     print("\nGénération partie 1 (0–8s)...")
     prompt_1 = (
@@ -113,7 +107,8 @@ def generate_video_with_refs():
         config=types.GenerateVideosConfig(
             reference_images=reference_images if reference_images else None,
             duration_seconds=8,
-            aspect_ratio="9:16",  # ← tu as changé à 9:16 (portrait), c'est OK si voulu
+            aspect_ratio="16:9",  # ← clé : 16:9 pour que l'extension passe
+            # resolution="720p" ou rien → comme avant, pas obligatoire ici
         ),
     )
     current_video = wait_for_op(client, op_name_1)
@@ -124,7 +119,7 @@ def generate_video_with_refs():
     time.sleep(20)
 
     # ───────────────────────────────────────────────
-    # ÉTAPE 2 : Extension (resolution="720p" seulement ici → comme ton ancien code)
+    # ÉTAPE 2 : Extension → resolution="720p" (comme ton ancien code)
     # ───────────────────────────────────────────────
     print("\nExtension partie 2 (8–15s)...")
     prompt_2 = (
@@ -136,7 +131,7 @@ def generate_video_with_refs():
         video=current_video,
         prompt=prompt_2,
         config=types.GenerateVideosConfig(
-            resolution="720p",  # ← forcé ici → respecte ton ancien fonctionnement
+            resolution="720p",  # ← forcé ici, comme avant
         ),
     )
     current_video = wait_for_op(client, op_name_2)
