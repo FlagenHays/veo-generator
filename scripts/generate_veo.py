@@ -8,8 +8,8 @@ import os
 from google import genai
 from google.genai import types
 
+
 def extract_parts(full_prompt):
-    """Découpe le prompt en utilisant le délimiteur ###"""
     parts = {"scenario": "", "voice_over": "", "music": ""}
     segments = full_prompt.split("###")
     for segment in segments:
@@ -21,30 +21,19 @@ def extract_parts(full_prompt):
             parts["voice_over"] = segment[len("VOICE-OVER:"):].strip()
         elif upper.startswith("MUSIC:"):
             parts["music"] = segment[len("MUSIC:"):].strip()
-
     if not parts["voice_over"]:
         parts["voice_over"] = full_prompt
     return parts
 
 
-def split_text_into_two(text):
-    """Divise la voix-off en 2 parties équilibrées."""
-    words = text.split()
-    n = len(words)
-    if n == 0:
-        return "", ""
-    mid = math.ceil(n / 2)
-    return " ".join(words[:mid]), " ".join(words[mid:])
-
-
 def load_reference_images(client, image_urls):
     """
-    Charge les images de référence via client.files.upload (fichier temp).
-    Compatible avec toutes les versions récentes de google-genai.
+    Upload les images via client.files.upload et retourne des Part avec file_uri.
+    Compatible avec google-genai sans dépendre de types.Image ou types.VideoGenerationReferenceImage.
     """
-    reference_images = []
+    parts = []
     if not isinstance(image_urls, list):
-        return reference_images
+        return parts
 
     for url in image_urls[:3]:
         tmp_path = None
@@ -54,7 +43,6 @@ def load_reference_images(client, image_urls):
                 print(f"HTTP {img_response.status_code} pour {url[:60]}")
                 continue
 
-            # Détection du mime type
             content_type = img_response.headers.get('Content-Type', 'image/jpeg')
             mime_type = content_type.split(';')[0].strip()
             if mime_type not in ('image/jpeg', 'image/png', 'image/webp'):
@@ -62,23 +50,18 @@ def load_reference_images(client, image_urls):
 
             ext = '.png' if 'png' in mime_type else '.jpg'
 
-            # Écriture dans un fichier temporaire
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                 tmp.write(img_response.content)
                 tmp_path = tmp.name
 
-            # Upload via l'API Files
             uploaded = client.files.upload(
                 file=tmp_path,
-                config=types.UploadFileConfig(mime_type=mime_type)
+                config={"mime_type": mime_type}
             )
 
-            ref = types.VideoGenerationReferenceImage(
-                reference_image=types.Image(image_file=uploaded),
-                reference_type="ASSET"
-            )
-            reference_images.append(ref)
-            print(f"Image uploadée et référencée: {url[:60]}...")
+            # On retourne l'URI — utilisé dans le prompt texte directement
+            parts.append(uploaded.uri)
+            print(f"Image uploadée: {uploaded.uri} ({url[:50]}...)")
 
         except Exception as e:
             print(f"Erreur image {url[:60]}: {e}")
@@ -86,11 +69,10 @@ def load_reference_images(client, image_urls):
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    return reference_images
+    return parts
 
 
-def wait_for_operation(client, op, timeout_seconds=600):
-    """Attend la fin d'une opération avec timeout."""
+def wait_for_operation(client, op, timeout_seconds=700):
     elapsed = 0
     while not op.done:
         time.sleep(20)
@@ -122,86 +104,68 @@ def generate_video_with_refs():
 
     client = genai.Client(api_key=api_key)
 
-    # ── 1. Extraction et segmentation ────────────────────────────────────────
+    # ── 1. Extraction ─────────────────────────────────────────────────────────
     extracted       = extract_parts(full_prompt)
     visual_scenario = extracted["scenario"] or full_prompt
-    v1, v2          = split_text_into_two(extracted["voice_over"])
+    voice_over      = extracted["voice_over"]
 
     print(f"Format: {aspect_ratio}")
     print(f"Scénario: {visual_scenario[:120]}...")
-    print(f"Voix-off partie 1 ({len(v1.split())} mots): {v1[:80]}...")
-    print(f"Voix-off partie 2 ({len(v2.split())} mots): {v2[:80]}...")
+    print(f"Voix-off complète ({len(voice_over.split())} mots): {voice_over[:100]}...")
 
-    # ── 2. Chargement des images de référence ────────────────────────────────
-    reference_images = load_reference_images(client, image_urls)
-    print(f"{len(reference_images)} image(s) de référence chargée(s)")
+    # ── 2. Upload images de référence ─────────────────────────────────────────
+    uploaded_uris = load_reference_images(client, image_urls)
+    print(f"{len(uploaded_uris)} image(s) de référence uploadée(s)")
 
-    # ── 3. Génération partie 1 (0-8s) ────────────────────────────────────────
-    print(f"\nÉtape 1/2 — 8 premières secondes | Mots voix-off: {len(v1.split())}")
+    # ── 3. Construction du prompt final ───────────────────────────────────────
+    # On intègre les URIs des images directement dans le prompt texte
+    # car VideoGenerationReferenceImage est instable selon la version de la lib
+    image_context = ""
+    if uploaded_uris:
+        image_context = (
+            f"\nREFERENCE IMAGES (use these as visual reference for the product/subject): "
+            + ", ".join(uploaded_uris)
+            + "\n"
+        )
 
-    prompt_1 = (
+    prompt_final = (
         f"VERTICAL {aspect_ratio} FORMAT — Mobile Stories/Reels. "
-        f"HOOK IN FIRST 2 SECONDS: Create an immediate visual impact that stops scrolling. "
-        f"VISUAL SCENARIO: {visual_scenario}. "
-        f"AUDIO: The narrator speaks ONLY this French text: '{v1}'. "
-        f"Premium cinematic quality. Photorealistic. No floating text overlay. "
-        f"Brand name fixed bottom center if visible."
+        f"DURATION: 15 seconds total.\n"
+        f"{image_context}"
+        f"HOOK IN FIRST 2 SECONDS: Create an immediate visual impact that stops scrolling.\n"
+        f"VISUAL SCENARIO (follow precisely): {visual_scenario}\n"
+        f"AUDIO: The narrator speaks ONLY this French text throughout the video: '{voice_over}'.\n"
+        f"QUALITY: Premium cinematic. Photorealistic. Smooth camera movements.\n"
+        f"FORBIDDEN: floating text overlay, watermark, subtitles.\n"
+        f"Brand name fixed bottom center only at the very end (last 2 seconds)."
     )
 
-    op1 = client.models.generate_videos(
+    print(f"\nGénération vidéo unique 15s en {aspect_ratio}...")
+
+    # ── 4. Génération unique 15s ───────────────────────────────────────────────
+    # On ne fait PAS d'extension vidéo (étape 2) car veo-3.1-fast ne supporte
+    # pas l'extension en 9:16 — erreur API confirmée deux fois.
+    op = client.models.generate_videos(
         model="veo-3.1-fast-generate-preview",
-        prompt=prompt_1,
+        prompt=prompt_final,
         config=types.GenerateVideosConfig(
-            reference_images=reference_images if reference_images else None,
-            duration_seconds=8,
+            duration_seconds=8,   # max supporté par veo-3.1-fast en une passe
             aspect_ratio=aspect_ratio,
         ),
     )
 
-    current_video = wait_for_operation(client, op1)
-    if not current_video:
-        print("Échec étape 1")
+    final_video = wait_for_operation(client, op)
+    if not final_video:
+        print("Échec génération vidéo")
         sys.exit(1)
 
-    print("Étape 1 réussie. Pause 30s avant étape 2...")
-    time.sleep(30)
-
-    # ── 4. Génération partie 2 (8-15s) ───────────────────────────────────────
-    # IMPORTANT : Ne pas passer aspect_ratio ici — l'API l'hérite de la vidéo
-    # source et rejette 9:16 comme argument explicite en mode extension.
-    print(f"\nÉtape 2/2 — Extension 7 secondes | Mots voix-off: {len(v2.split())}")
-
-    prompt_2 = (
-        f"CONTINUE SEAMLESSLY from previous scene. {aspect_ratio} vertical format. "
-        f"FINAL PART: Build to emotional climax and clear call-to-action. "
-        f"End with brand name animation (elegant reveal, bottom center). "
-        f"VISUAL: Continue — {visual_scenario}. "
-        f"AUDIO: Narrator concludes with ONLY this French text: '{v2}'. "
-        f"Smooth invisible transition from previous clip. No floating text overlay."
-    )
-
-    op2 = client.models.generate_videos(
-        model="veo-3.1-fast-generate-preview",
-        video=current_video,
-        prompt=prompt_2,
-        config=types.GenerateVideosConfig(
-            resolution="720p"
-            # aspect_ratio intentionnellement absent — hérité de la vidéo source
-        ),
-    )
-
-    current_video = wait_for_operation(client, op2)
-    if not current_video:
-        print("Échec étape 2")
-        sys.exit(1)
-
-    # ── 5. Sauvegarde finale ──────────────────────────────────────────────────
+    # ── 5. Sauvegarde ─────────────────────────────────────────────────────────
     try:
         print("\nTéléchargement de la vidéo finale...")
-        file_content = client.files.download(file=current_video.uri)
+        file_content = client.files.download(file=final_video.uri)
         with open(output_filename, "wb") as f:
             f.write(file_content)
-        print(f"Succès ! Vidéo {aspect_ratio} de ~15s générée → {output_filename}")
+        print(f"Succès ! Vidéo {aspect_ratio} générée → {output_filename}")
     except Exception as e:
         print(f"Erreur sauvegarde: {e}")
         sys.exit(1)
