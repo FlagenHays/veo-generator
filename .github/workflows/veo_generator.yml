@@ -1,9 +1,7 @@
 name: Veo Video Generator
-
 on:
   repository_dispatch:
     types: [trigger_veo_generation]
-
 jobs:
   build_video:
     runs-on: ubuntu-latest
@@ -27,7 +25,8 @@ jobs:
           python scripts/generate_veo.py \
           "$GEMINI_API_KEY" \
           "${{ github.event.client_payload.prompt }}" \
-          '${{ toJson(github.event.client_payload.images) }}'
+          '${{ toJson(github.event.client_payload.images) }}' \
+          "${{ github.event.client_payload.aspect_ratio }}"
 
       - name: Send Video Back to Hostinger
         if: success()
