@@ -1,10 +1,14 @@
 name: Veo Video Generator
+
 on:
   repository_dispatch:
     types: [trigger_veo_generation]
+
 jobs:
   build_video:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -23,16 +27,42 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python scripts/generate_veo.py \
-          "$GEMINI_API_KEY" \
-          "${{ github.event.client_payload.prompt }}" \
-          '${{ toJson(github.event.client_payload.images) }}' \
-          "${{ github.event.client_payload.aspect_ratio }}"
+            "$GEMINI_API_KEY" \
+            "${{ github.event.client_payload.prompt }}" \
+            '${{ toJson(github.event.client_payload.images) }}' \
+            "${{ github.event.client_payload.aspect_ratio }}"
+
+      - name: Verify Video File
+        run: |
+          if [ ! -f final_video.mp4 ]; then
+            echo "ERREUR : final_video.mp4 introuvable"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "final_video.mp4")
+          echo "Taille vidéo : ${SIZE} bytes"
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "ERREUR : fichier trop petit, génération probablement échouée"
+            exit 1
+          fi
 
       - name: Send Video Back to Hostinger
         if: success()
         run: |
           curl -X POST "${{ github.event.client_payload.webhook_url }}" \
-          -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
-          -F "video=@final_video.mp4" \
-          -F "uuid=${{ github.event.client_payload.uuid }}" \
-          -F "campagne_id=${{ github.event.client_payload.campagne_id }}"
+            -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
+            -F "video=@final_video.mp4" \
+            -F "uuid=${{ github.event.client_payload.uuid }}" \
+            -F "campagne_id=${{ github.event.client_payload.campagne_id }}" \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 10
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          curl -X POST "${{ github.event.client_payload.webhook_url }}" \
+            -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
+            -F "error=generation_failed" \
+            -F "uuid=${{ github.event.client_payload.uuid }}" \
+            -F "campagne_id=${{ github.event.client_payload.campagne_id }}" \
+            --max-time 30 || true
