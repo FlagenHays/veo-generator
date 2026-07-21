@@ -3,22 +3,23 @@ import sys
 import json
 import requests
 import math
+import tempfile
+import os
 from google import genai
 from google.genai import types
 
 def extract_parts(full_prompt):
     """Découpe le prompt en utilisant le délimiteur ###"""
-    parts = {"scenario": "", "voice_over": "", "music": "", "aspect_ratio": "9:16"}
+    parts = {"scenario": "", "voice_over": "", "music": ""}
     segments = full_prompt.split("###")
     for segment in segments:
         segment = segment.strip()
-        if segment.upper().startswith("FORMAT:"):
-            pass  # géré via argv
-        elif segment.upper().startswith("SCENARIO:"):
+        upper = segment.upper()
+        if upper.startswith("SCENARIO:"):
             parts["scenario"] = segment[len("SCENARIO:"):].strip()
-        elif segment.upper().startswith("VOICE-OVER:"):
+        elif upper.startswith("VOICE-OVER:"):
             parts["voice_over"] = segment[len("VOICE-OVER:"):].strip()
-        elif segment.upper().startswith("MUSIC:"):
+        elif upper.startswith("MUSIC:"):
             parts["music"] = segment[len("MUSIC:"):].strip()
 
     if not parts["voice_over"]:
@@ -36,24 +37,54 @@ def split_text_into_two(text):
     return " ".join(words[:mid]), " ".join(words[mid:])
 
 
-def load_reference_images(image_urls):
-    """Charge les images de référence produit/personnage."""
+def load_reference_images(client, image_urls):
+    """
+    Charge les images de référence via client.files.upload (fichier temp).
+    Compatible avec toutes les versions récentes de google-genai.
+    """
     reference_images = []
     if not isinstance(image_urls, list):
         return reference_images
 
     for url in image_urls[:3]:
+        tmp_path = None
         try:
             img_response = requests.get(url, timeout=15)
-            if img_response.status_code == 200:
-                ref = types.VideoGenerationReferenceImage(
-                    image=types.Image(bytes=img_response.content, mime_type="image/jpeg"),
-                    reference_type="ASSET"
-                )
-                reference_images.append(ref)
-                print(f"Image de référence chargée: {url[:60]}...")
+            if img_response.status_code != 200:
+                print(f"HTTP {img_response.status_code} pour {url[:60]}")
+                continue
+
+            # Détection du mime type
+            content_type = img_response.headers.get('Content-Type', 'image/jpeg')
+            mime_type = content_type.split(';')[0].strip()
+            if mime_type not in ('image/jpeg', 'image/png', 'image/webp'):
+                mime_type = 'image/jpeg'
+
+            ext = '.png' if 'png' in mime_type else '.jpg'
+
+            # Écriture dans un fichier temporaire
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(img_response.content)
+                tmp_path = tmp.name
+
+            # Upload via l'API Files
+            uploaded = client.files.upload(
+                file=tmp_path,
+                config=types.UploadFileConfig(mime_type=mime_type)
+            )
+
+            ref = types.VideoGenerationReferenceImage(
+                reference_image=types.Image(image_file=uploaded),
+                reference_type="ASSET"
+            )
+            reference_images.append(ref)
+            print(f"Image uploadée et référencée: {url[:60]}...")
+
         except Exception as e:
-            print(f"Erreur chargement image {url[:60]}: {e}")
+            print(f"Erreur image {url[:60]}: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     return reference_images
 
@@ -102,7 +133,7 @@ def generate_video_with_refs():
     print(f"Voix-off partie 2 ({len(v2.split())} mots): {v2[:80]}...")
 
     # ── 2. Chargement des images de référence ────────────────────────────────
-    reference_images = load_reference_images(image_urls)
+    reference_images = load_reference_images(client, image_urls)
     print(f"{len(reference_images)} image(s) de référence chargée(s)")
 
     # ── 3. Génération partie 1 (0-8s) ────────────────────────────────────────
@@ -136,6 +167,8 @@ def generate_video_with_refs():
     time.sleep(30)
 
     # ── 4. Génération partie 2 (8-15s) ───────────────────────────────────────
+    # IMPORTANT : Ne pas passer aspect_ratio ici — l'API l'hérite de la vidéo
+    # source et rejette 9:16 comme argument explicite en mode extension.
     print(f"\nÉtape 2/2 — Extension 7 secondes | Mots voix-off: {len(v2.split())}")
 
     prompt_2 = (
@@ -151,7 +184,10 @@ def generate_video_with_refs():
         model="veo-3.1-fast-generate-preview",
         video=current_video,
         prompt=prompt_2,
-        config=types.GenerateVideosConfig(resolution="720p"),
+        config=types.GenerateVideosConfig(
+            resolution="720p"
+            # aspect_ratio intentionnellement absent — hérité de la vidéo source
+        ),
     )
 
     current_video = wait_for_operation(client, op2)
