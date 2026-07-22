@@ -26,17 +26,25 @@ def extract_parts(full_prompt):
     return parts
 
 
+def split_text_into_two(text):
+    words = text.split()
+    n = len(words)
+    if n == 0:
+        return "", ""
+    mid = math.ceil(n / 2)
+    return " ".join(words[:mid]), " ".join(words[mid:])
+
+
 def load_reference_images(client, image_urls):
     """
-    Upload les images via client.files.upload et retourne des Part avec file_uri.
-    Compatible avec google-genai sans dépendre de types.Image ou types.VideoGenerationReferenceImage.
+    Charge les images et retourne une liste de VideoGenerationReferenceImage.
+    Utilise types.Image avec image_bytes (bytes bruts) — syntaxe confirmée doc officielle.
     """
-    parts = []
+    reference_images = []
     if not isinstance(image_urls, list):
-        return parts
+        return reference_images
 
     for url in image_urls[:3]:
-        tmp_path = None
         try:
             img_response = requests.get(url, timeout=15)
             if img_response.status_code != 200:
@@ -48,28 +56,20 @@ def load_reference_images(client, image_urls):
             if mime_type not in ('image/jpeg', 'image/png', 'image/webp'):
                 mime_type = 'image/jpeg'
 
-            ext = '.png' if 'png' in mime_type else '.jpg'
-
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                tmp.write(img_response.content)
-                tmp_path = tmp.name
-
-            uploaded = client.files.upload(
-                file=tmp_path,
-                config={"mime_type": mime_type}
+            ref = types.VideoGenerationReferenceImage(
+                reference_image=types.Image(
+                    image_bytes=img_response.content,
+                    mime_type=mime_type,
+                ),
+                reference_type="ASSET",
             )
-
-            # On retourne l'URI — utilisé dans le prompt texte directement
-            parts.append(uploaded.uri)
-            print(f"Image uploadée: {uploaded.uri} ({url[:50]}...)")
+            reference_images.append(ref)
+            print(f"Image de référence chargée: {url[:60]}...")
 
         except Exception as e:
             print(f"Erreur image {url[:60]}: {e}")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
 
-    return parts
+    return reference_images
 
 
 def wait_for_operation(client, op, timeout_seconds=700):
@@ -83,8 +83,8 @@ def wait_for_operation(client, op, timeout_seconds=700):
         op = client.operations.get(op)
         print(f"En attente... {elapsed}s écoulées")
 
-    if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
-        return op.result.generated_videos[0].video
+    if op.response and hasattr(op.response, 'generated_videos') and op.response.generated_videos:
+        return op.response.generated_videos[0]
 
     if hasattr(op, 'error') and op.error:
         print(f"Erreur opération: {op.error}")
@@ -107,68 +107,95 @@ def generate_video_with_refs():
     # ── 1. Extraction ─────────────────────────────────────────────────────────
     extracted       = extract_parts(full_prompt)
     visual_scenario = extracted["scenario"] or full_prompt
-    voice_over      = extracted["voice_over"]
+    v1, v2          = split_text_into_two(extracted["voice_over"])
 
     print(f"Format: {aspect_ratio}")
     print(f"Scénario: {visual_scenario[:120]}...")
-    print(f"Voix-off complète ({len(voice_over.split())} mots): {voice_over[:100]}...")
+    print(f"Voix-off partie 1 ({len(v1.split())} mots): {v1[:80]}...")
+    print(f"Voix-off partie 2 ({len(v2.split())} mots): {v2[:80]}...")
 
-    # ── 2. Upload images de référence ─────────────────────────────────────────
-    uploaded_uris = load_reference_images(client, image_urls)
-    print(f"{len(uploaded_uris)} image(s) de référence uploadée(s)")
+    # ── 2. Chargement des images de référence ─────────────────────────────────
+    reference_images = load_reference_images(client, image_urls)
+    print(f"{len(reference_images)} image(s) de référence chargée(s)")
 
-    # ── 3. Construction du prompt final ───────────────────────────────────────
-    # On intègre les URIs des images directement dans le prompt texte
-    # car VideoGenerationReferenceImage est instable selon la version de la lib
-    image_context = ""
-    if uploaded_uris:
-        image_context = (
-            f"\nREFERENCE IMAGES (use these as visual reference for the product/subject): "
-            + ", ".join(uploaded_uris)
-            + "\n"
-        )
+    # ── 3. Génération partie 1 (8s) ───────────────────────────────────────────
+    # Avec images de référence → duration_seconds DOIT être 8 (doc officielle)
+    print(f"\nÉtape 1/2 — 8 secondes | Mots voix-off: {len(v1.split())}")
 
-    prompt_final = (
+    prompt_1 = (
         f"VERTICAL {aspect_ratio} FORMAT — Mobile Stories/Reels. "
-        f"DURATION: 15 seconds total.\n"
-        f"{image_context}"
-        f"HOOK IN FIRST 2 SECONDS: Create an immediate visual impact that stops scrolling.\n"
-        f"VISUAL SCENARIO (follow precisely): {visual_scenario}\n"
-        f"AUDIO: The narrator speaks ONLY this French text throughout the video: '{voice_over}'.\n"
-        f"QUALITY: Premium cinematic. Photorealistic. Smooth camera movements.\n"
-        f"FORBIDDEN: floating text overlay, watermark, subtitles.\n"
-        f"Brand name fixed bottom center only at the very end (last 2 seconds)."
+        f"HOOK IN FIRST 2 SECONDS: immediate visual impact that stops scrolling. "
+        f"VISUAL SCENARIO: {visual_scenario}. "
+        f"AUDIO: narrator speaks ONLY this French text: '{v1}'. "
+        f"Premium cinematic. Photorealistic. No text overlay. No watermark."
     )
 
-    print(f"\nGénération vidéo unique 15s en {aspect_ratio}...")
-
-    # ── 4. Génération unique 15s ───────────────────────────────────────────────
-    # On ne fait PAS d'extension vidéo (étape 2) car veo-3.1-fast ne supporte
-    # pas l'extension en 9:16 — erreur API confirmée deux fois.
-    op = client.models.generate_videos(
+    op1 = client.models.generate_videos(
         model="veo-3.1-fast-generate-preview",
-        prompt=prompt_final,
+        prompt=prompt_1,
         config=types.GenerateVideosConfig(
-            duration_seconds=8,   # max supporté par veo-3.1-fast en une passe
+            reference_images=reference_images if reference_images else None,
+            duration_seconds=8,
             aspect_ratio=aspect_ratio,
+            resolution="720p",
+            person_generation="allow_adult",
         ),
     )
 
-    final_video = wait_for_operation(client, op)
-    if not final_video:
-        print("Échec génération vidéo")
+    result1 = wait_for_operation(client, op1)
+    if not result1:
+        print("Échec étape 1")
         sys.exit(1)
 
-    # ── 5. Sauvegarde ─────────────────────────────────────────────────────────
+    print("Étape 1 réussie. Pause 30s avant étape 2...")
+    time.sleep(30)
+
+    # ── 4. Extension partie 2 (8s supplémentaires) ────────────────────────────
+    # Extension → resolution forcée 720p (doc officielle)
+    # → Ne PAS passer aspect_ratio (hérité de la vidéo source)
+    print(f"\nÉtape 2/2 — Extension 8s | Mots voix-off: {len(v2.split())}")
+
+    prompt_2 = (
+        f"CONTINUE SEAMLESSLY. {aspect_ratio} vertical. "
+        f"Build to climax and CTA. End with brand name elegant reveal bottom center. "
+        f"VISUAL: continue — {visual_scenario}. "
+        f"AUDIO: narrator concludes ONLY: '{v2}'. "
+        f"No text overlay. Smooth invisible transition."
+    )
+
+    op2 = client.models.generate_videos(
+        model="veo-3.1-fast-generate-preview",
+        prompt=prompt_2,
+        video=result1.video,
+        config=types.GenerateVideosConfig(
+            duration_seconds=8,
+            resolution="720p",
+            # aspect_ratio intentionnellement absent — hérité de la vidéo source
+        ),
+    )
+
+    result2 = wait_for_operation(client, op2)
+    if not result2:
+        print("Étape 2 échouée — sauvegarde de la partie 1 uniquement")
+        # On sauvegarde quand même la partie 1
+        result2 = result1
+
+    # ── 5. Sauvegarde finale ──────────────────────────────────────────────────
     try:
         print("\nTéléchargement de la vidéo finale...")
-        file_content = client.files.download(file=final_video.uri)
-        with open(output_filename, "wb") as f:
-            f.write(file_content)
+        client.files.download(file=result2.video)
+        result2.video.save(output_filename)
         print(f"Succès ! Vidéo {aspect_ratio} générée → {output_filename}")
     except Exception as e:
-        print(f"Erreur sauvegarde: {e}")
-        sys.exit(1)
+        print(f"Erreur sauvegarde finale: {e}")
+        # Fallback : tenter avec la partie 1
+        try:
+            client.files.download(file=result1.video)
+            result1.video.save(output_filename)
+            print(f"Fallback partie 1 sauvegardée → {output_filename}")
+        except Exception as e2:
+            print(f"Erreur fallback: {e2}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
