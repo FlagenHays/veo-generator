@@ -186,14 +186,16 @@ def generate_video_with_refs():
     # Extension en 16:9 → fonctionne (confirmé dans les anciens logs)
     print(f"\nÉtape 2/2 — Extension 8s en 16:9")
 
+    # ── 4. Extension partie 2 ────────────────────────────────────────────────────
     prompt_2 = (
-        f"CONTINUE SEAMLESSLY. LANDSCAPE 16:9. "
-        f"ALL subjects STRICTLY CENTERED horizontally. "
-        f"Left/right 25% background only. "
-        f"Build to climax and CTA. Brand name reveal bottom center. "
-        f"VISUAL: continue — {visual_scenario}. "
-        f"AUDIO: narrator concludes ONLY: '{v2}'. "
-        f"No floating text. Smooth transition."
+        f"CONTINUATION OF THE PREVIOUS CLIP. LANDSCAPE 16:9. "
+        f"ALL subjects STRICTLY CENTERED horizontally. Left/right 25% background only. "
+        f"IMPORTANT AUDIO INSTRUCTION: The previous clip already said: '{v1}'. "
+        f"DO NOT repeat those words. DO NOT start from the beginning of the narration. "
+        f"The narrator continues EXACTLY where the previous clip ended, speaking ONLY these new words: '{v2}'. "
+        f"Build to climax and CTA. Brand name reveal bottom center at the very end. "
+        f"VISUAL: continue seamlessly — {visual_scenario}. "
+        f"No floating text. Smooth transition from previous clip."
     )
 
     op2 = client.models.generate_videos(
