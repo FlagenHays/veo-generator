@@ -97,7 +97,6 @@ def download_video(client, video_obj, output_path):
 
 
 def crop_to_portrait(input_file, output_file):
-    """Crop 16:9 → 9:16 en gardant le centre. Qualité inchangée."""
     cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
@@ -107,7 +106,7 @@ def crop_to_portrait(input_file, output_file):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Erreur ffmpeg crop: {result.stderr[-300:]}")
+        print(f"Erreur ffmpeg: {result.stderr[-300:]}")
         return False
     import os
     size = os.path.getsize(output_file)
@@ -132,7 +131,7 @@ def generate_video_with_refs():
     visual_scenario = extracted["scenario"] or full_prompt
     v1, v2          = split_text_into_two(extracted["voice_over"])
 
-    print(f"Stratégie: 8s + extension 7s en 16:9 → crop ffmpeg → 9:16 (15s total)")
+    print(f"Stratégie: 16:9 SDK → 1 extension 16:9 → crop ffmpeg → 9:16")
     print(f"Scénario: {visual_scenario[:120]}...")
     print(f"V1 ({len(v1.split())} mots): {v1[:80]}...")
     print(f"V2 ({len(v2.split())} mots): {v2[:80]}...")
@@ -148,12 +147,11 @@ def generate_video_with_refs():
         f"LANDSCAPE 16:9 FORMAT. "
         f"CRITICAL COMPOSITION: Keep ALL subjects and products STRICTLY CENTERED horizontally. "
         f"Left and right 25% of frame must stay background only "
-        f"(video will be cropped to 9:16 portrait, only center kept). "
-        f"HOOK IN FIRST 2 SECONDS: immediate visual impact that stops scrolling. "
+        f"(will be cropped to 9:16, only center kept). "
+        f"HOOK IN FIRST 2 SECONDS: immediate visual impact. "
         f"VISUAL SCENARIO: {visual_scenario}. "
         f"AUDIO: narrator speaks ONLY this French text: '{v1}'. "
-        f"Premium cinematic. Photorealistic. No floating text overlay. No watermark. "
-        f"Slow sensual camera movements. All action stays center frame."
+        f"Premium cinematic. Photorealistic. No floating text. No watermark."
     )
 
     op1 = client.models.generate_videos(
@@ -176,21 +174,20 @@ def generate_video_with_refs():
         print("Échec téléchargement partie 1")
         sys.exit(1)
 
-    print("Étape 1 réussie. Pause 30s avant extension...")
+    print("Étape 1 réussie. Pause 30s...")
     time.sleep(30)
 
-    # ── 4. Extension unique — 7s supplémentaires en 16:9 ─────────────────────
-    # Une seule extension (pas deux) — exactement comme l'ancien code
-    # aspect_ratio absent → hérité 16:9 de la vidéo source → pas d'erreur 9:16
-    print(f"\nÉtape 2/2 — Extension 7s en 16:9")
+    # ── 4. UNE SEULE extension — 8s en 16:9 ──────────────────────────────────
+    print(f"\nÉtape 2/2 — Extension 8s en 16:9")
 
     prompt_2 = (
-        f"CONTINUATION OF THE PREVIOUS CLIP. LANDSCAPE 16:9. "
-        f"ALL subjects STRICTLY CENTERED horizontally. Left/right 25% background only. "
-        f"AUDIO: The narrator speaks ONLY these new words (continuation): '{v2}'. "
-        f"Build to emotional climax and CTA. Brand name elegant reveal bottom center at the very end. "
-        f"VISUAL: continue seamlessly — {visual_scenario}. "
-        f"No floating text overlay. Smooth invisible transition from previous clip."
+        f"CONTINUE SEAMLESSLY. LANDSCAPE 16:9. "
+        f"ALL subjects STRICTLY CENTERED horizontally. "
+        f"Left/right 25% background only. "
+        f"Build to climax and CTA. Brand name reveal bottom center. "
+        f"VISUAL: continue — {visual_scenario}. "
+        f"AUDIO: narrator concludes ONLY: '{v2}'. "
+        f"No floating text. Smooth transition."
     )
 
     op2 = client.models.generate_videos(
@@ -198,28 +195,44 @@ def generate_video_with_refs():
         prompt=prompt_2,
         video=video1,
         config=types.GenerateVideosConfig(
-            duration_seconds=7,
+            duration_seconds=8,
             resolution="720p",
-            # aspect_ratio intentionnellement absent — hérité 16:9 de video1
+            # aspect_ratio absent — hérité 16:9 de la vidéo source
         ),
     )
 
     video2 = wait_for_op(client, op2)
 
-    if not video2 or not download_video(client, video2, "raw_16x9.mp4"):
+    if not video2 or not download_video(client, video2, "part2_16x9.mp4"):
         print("Extension échouée — crop partie 1 uniquement (8s)")
         crop_to_portrait("part1_16x9.mp4", output_file)
         sys.exit(0)
 
-    # ── 5. Crop final 16:9 → 9:16 ────────────────────────────────────────────
-    # La vidéo "raw_16x9.mp4" contient la vidéo étendue (15s en 16:9)
-    # Le crop garde uniquement le centre → parfait pour Stories/Reels
-    print("\nCrop 16:9 → 9:16 (centre)...")
+    # ── 5. Concaténation part1 + part2 ───────────────────────────────────────
+    print("\nConcaténation des deux parties...")
+    with open("filelist.txt", "w") as f:
+        f.write("file 'part1_16x9.mp4'\n")
+        f.write("file 'part2_16x9.mp4'\n")
+
+    concat = subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+         "-i", "filelist.txt", "-c", "copy", "raw_16x9.mp4"],
+        capture_output=True, text=True
+    )
+
+    if concat.returncode != 0:
+        print(f"Erreur concat: {concat.stderr[-300:]}")
+        crop_to_portrait("part2_16x9.mp4", output_file)
+        sys.exit(0)
+
+    print("Concaténation réussie — ~16s en 16:9")
+
+    # ── 6. Crop final → 9:16 ─────────────────────────────────────────────────
+    print("\nCrop 16:9 → 9:16...")
     if not crop_to_portrait("raw_16x9.mp4", output_file):
-        print("Erreur crop vidéo étendue — fallback crop partie 1")
         crop_to_portrait("part1_16x9.mp4", output_file)
 
-    print(f"\nSuccès ! Vidéo 9:16 ~15s → {output_file}")
+    print(f"\nSuccès ! Vidéo 9:16 ~16s → {output_file}")
 
 
 if __name__ == "__main__":
