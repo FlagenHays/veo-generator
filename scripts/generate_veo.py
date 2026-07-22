@@ -38,7 +38,7 @@ def split_text_into_two(text):
 def load_reference_images(client, image_urls):
     """
     Charge les images et retourne une liste de VideoGenerationReferenceImage.
-    Utilise types.Image avec image_bytes (bytes bruts) — syntaxe confirmée doc officielle.
+    google-genai 2.13.0 : on passe les bytes bruts directement sans types.Image wrapper.
     """
     reference_images = []
     if not isinstance(image_urls, list):
@@ -56,11 +56,11 @@ def load_reference_images(client, image_urls):
             if mime_type not in ('image/jpeg', 'image/png', 'image/webp'):
                 mime_type = 'image/jpeg'
 
+            # google-genai 2.13.0 : VideoGenerationReferenceImage accepte
+            # image_bytes et mime_type directement (pas de types.Image wrapper)
             ref = types.VideoGenerationReferenceImage(
-                reference_image=types.Image(
-                    image_bytes=img_response.content,
-                    mime_type=mime_type,
-                ),
+                image_bytes=img_response.content,
+                mime_type=mime_type,
                 reference_type="ASSET",
             )
             reference_images.append(ref)
@@ -114,12 +114,11 @@ def generate_video_with_refs():
     print(f"Voix-off partie 1 ({len(v1.split())} mots): {v1[:80]}...")
     print(f"Voix-off partie 2 ({len(v2.split())} mots): {v2[:80]}...")
 
-    # ── 2. Chargement des images de référence ─────────────────────────────────
+    # ── 2. Chargement images de référence ─────────────────────────────────────
     reference_images = load_reference_images(client, image_urls)
     print(f"{len(reference_images)} image(s) de référence chargée(s)")
 
     # ── 3. Génération partie 1 (8s) ───────────────────────────────────────────
-    # Avec images de référence → duration_seconds DOIT être 8 (doc officielle)
     print(f"\nÉtape 1/2 — 8 secondes | Mots voix-off: {len(v1.split())}")
 
     prompt_1 = (
@@ -138,7 +137,7 @@ def generate_video_with_refs():
             duration_seconds=8,
             aspect_ratio=aspect_ratio,
             resolution="720p",
-            person_generation="allow_adult",
+            # person_generation retiré — cause erreur selon la région
         ),
     )
 
@@ -150,9 +149,8 @@ def generate_video_with_refs():
     print("Étape 1 réussie. Pause 30s avant étape 2...")
     time.sleep(30)
 
-    # ── 4. Extension partie 2 (8s supplémentaires) ────────────────────────────
-    # Extension → resolution forcée 720p (doc officielle)
-    # → Ne PAS passer aspect_ratio (hérité de la vidéo source)
+    # ── 4. Extension partie 2 (8s) ────────────────────────────────────────────
+    # Sans aspect_ratio (hérité), sans person_generation, résolution 720p forcée
     print(f"\nÉtape 2/2 — Extension 8s | Mots voix-off: {len(v2.split())}")
 
     prompt_2 = (
@@ -176,11 +174,10 @@ def generate_video_with_refs():
 
     result2 = wait_for_operation(client, op2)
     if not result2:
-        print("Étape 2 échouée — sauvegarde de la partie 1 uniquement")
-        # On sauvegarde quand même la partie 1
+        print("Étape 2 échouée — sauvegarde partie 1 uniquement")
         result2 = result1
 
-    # ── 5. Sauvegarde finale ──────────────────────────────────────────────────
+    # ── 5. Sauvegarde ─────────────────────────────────────────────────────────
     try:
         print("\nTéléchargement de la vidéo finale...")
         client.files.download(file=result2.video)
@@ -188,7 +185,6 @@ def generate_video_with_refs():
         print(f"Succès ! Vidéo {aspect_ratio} générée → {output_filename}")
     except Exception as e:
         print(f"Erreur sauvegarde finale: {e}")
-        # Fallback : tenter avec la partie 1
         try:
             client.files.download(file=result1.video)
             result1.video.save(output_filename)
