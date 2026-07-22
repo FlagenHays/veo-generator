@@ -7,7 +7,7 @@ on:
 jobs:
   build_video:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout Code
@@ -18,9 +18,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
-        run: |
-          pip install google-genai requests
+      - name: Install System Dependencies
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: pip install google-genai requests Pillow
 
       - name: Run Python Generator
         env:
@@ -41,9 +43,13 @@ jobs:
           SIZE=$(stat -c%s "final_video.mp4")
           echo "Taille vidéo : ${SIZE} bytes"
           if [ "$SIZE" -lt 100000 ]; then
-            echo "ERREUR : fichier trop petit, génération probablement échouée"
+            echo "ERREUR : fichier trop petit"
             exit 1
           fi
+          # Vérification format 9:16 avec ffprobe
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height \
+            -of csv=p=0 final_video.mp4
 
       - name: Send Video Back to Hostinger
         if: success()
