@@ -35,10 +35,6 @@ def split_text_into_two(text):
 
 
 def load_reference_images(image_urls):
-    """
-    Charge les images — syntaxe qui fonctionnait dans l'ancien code :
-    types.Image(bytes=content, mime_type=mime)
-    """
     reference_images = []
     if not isinstance(image_urls, list):
         return reference_images
@@ -111,7 +107,7 @@ def crop_to_portrait(input_file, output_file):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Erreur ffmpeg: {result.stderr[-300:]}")
+        print(f"Erreur ffmpeg crop: {result.stderr[-300:]}")
         return False
     import os
     size = os.path.getsize(output_file)
@@ -136,7 +132,7 @@ def generate_video_with_refs():
     visual_scenario = extracted["scenario"] or full_prompt
     v1, v2          = split_text_into_two(extracted["voice_over"])
 
-    print(f"Stratégie: 16:9 SDK → extension 16:9 → crop ffmpeg → 9:16")
+    print(f"Stratégie: 8s + extension 7s en 16:9 → crop ffmpeg → 9:16 (15s total)")
     print(f"Scénario: {visual_scenario[:120]}...")
     print(f"V1 ({len(v1.split())} mots): {v1[:80]}...")
     print(f"V2 ({len(v2.split())} mots): {v2[:80]}...")
@@ -152,11 +148,12 @@ def generate_video_with_refs():
         f"LANDSCAPE 16:9 FORMAT. "
         f"CRITICAL COMPOSITION: Keep ALL subjects and products STRICTLY CENTERED horizontally. "
         f"Left and right 25% of frame must stay background only "
-        f"(will be cropped to 9:16, only center kept). "
-        f"HOOK IN FIRST 2 SECONDS: immediate visual impact. "
+        f"(video will be cropped to 9:16 portrait, only center kept). "
+        f"HOOK IN FIRST 2 SECONDS: immediate visual impact that stops scrolling. "
         f"VISUAL SCENARIO: {visual_scenario}. "
         f"AUDIO: narrator speaks ONLY this French text: '{v1}'. "
-        f"Premium cinematic. Photorealistic. No floating text. No watermark."
+        f"Premium cinematic. Photorealistic. No floating text overlay. No watermark. "
+        f"Slow sensual camera movements. All action stays center frame."
     )
 
     op1 = client.models.generate_videos(
@@ -179,23 +176,21 @@ def generate_video_with_refs():
         print("Échec téléchargement partie 1")
         sys.exit(1)
 
-    print("Étape 1 réussie. Pause 30s...")
+    print("Étape 1 réussie. Pause 30s avant extension...")
     time.sleep(30)
 
-    # ── 4. Extension partie 2 — 8s en 16:9 ───────────────────────────────────
-    # Extension en 16:9 → fonctionne (confirmé dans les anciens logs)
-    print(f"\nÉtape 2/2 — Extension 8s en 16:9")
+    # ── 4. Extension unique — 7s supplémentaires en 16:9 ─────────────────────
+    # Une seule extension (pas deux) — exactement comme l'ancien code
+    # aspect_ratio absent → hérité 16:9 de la vidéo source → pas d'erreur 9:16
+    print(f"\nÉtape 2/2 — Extension 7s en 16:9")
 
-    # ── 4. Extension partie 2 ────────────────────────────────────────────────────
     prompt_2 = (
         f"CONTINUATION OF THE PREVIOUS CLIP. LANDSCAPE 16:9. "
         f"ALL subjects STRICTLY CENTERED horizontally. Left/right 25% background only. "
-        f"IMPORTANT AUDIO INSTRUCTION: The previous clip already said: '{v1}'. "
-        f"DO NOT repeat those words. DO NOT start from the beginning of the narration. "
-        f"The narrator continues EXACTLY where the previous clip ended, speaking ONLY these new words: '{v2}'. "
-        f"Build to climax and CTA. Brand name reveal bottom center at the very end. "
+        f"AUDIO: The narrator speaks ONLY these new words (continuation): '{v2}'. "
+        f"Build to emotional climax and CTA. Brand name elegant reveal bottom center at the very end. "
         f"VISUAL: continue seamlessly — {visual_scenario}. "
-        f"No floating text. Smooth transition from previous clip."
+        f"No floating text overlay. Smooth invisible transition from previous clip."
     )
 
     op2 = client.models.generate_videos(
@@ -203,44 +198,28 @@ def generate_video_with_refs():
         prompt=prompt_2,
         video=video1,
         config=types.GenerateVideosConfig(
-            duration_seconds=8,
+            duration_seconds=7,
             resolution="720p",
-            # aspect_ratio absent — hérité 16:9 de la vidéo source
+            # aspect_ratio intentionnellement absent — hérité 16:9 de video1
         ),
     )
 
     video2 = wait_for_op(client, op2)
 
-    if not video2 or not download_video(client, video2, "part2_16x9.mp4"):
-        print("Étape 2 échouée — crop partie 1 uniquement (8s)")
+    if not video2 or not download_video(client, video2, "raw_16x9.mp4"):
+        print("Extension échouée — crop partie 1 uniquement (8s)")
         crop_to_portrait("part1_16x9.mp4", output_file)
         sys.exit(0)
 
-    # ── 5. Concaténation ──────────────────────────────────────────────────────
-    print("\nConcaténation des deux parties...")
-    with open("filelist.txt", "w") as f:
-        f.write("file 'part1_16x9.mp4'\n")
-        f.write("file 'part2_16x9.mp4'\n")
-
-    concat = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", "filelist.txt", "-c", "copy", "raw_16x9.mp4"],
-        capture_output=True, text=True
-    )
-
-    if concat.returncode != 0:
-        print(f"Erreur concat: {concat.stderr[-300:]}")
-        crop_to_portrait("part2_16x9.mp4", output_file)
-        sys.exit(0)
-
-    print("Concaténation réussie — ~16s en 16:9")
-
-    # ── 6. Crop final → 9:16 ─────────────────────────────────────────────────
-    print("\nCrop 16:9 → 9:16...")
+    # ── 5. Crop final 16:9 → 9:16 ────────────────────────────────────────────
+    # La vidéo "raw_16x9.mp4" contient la vidéo étendue (15s en 16:9)
+    # Le crop garde uniquement le centre → parfait pour Stories/Reels
+    print("\nCrop 16:9 → 9:16 (centre)...")
     if not crop_to_portrait("raw_16x9.mp4", output_file):
+        print("Erreur crop vidéo étendue — fallback crop partie 1")
         crop_to_portrait("part1_16x9.mp4", output_file)
 
-    print(f"\nSuccès ! Vidéo 9:16 ~16s → {output_file}")
+    print(f"\nSuccès ! Vidéo 9:16 ~15s → {output_file}")
 
 
 if __name__ == "__main__":
