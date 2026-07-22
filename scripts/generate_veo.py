@@ -4,6 +4,7 @@ import json
 import requests
 import math
 import io
+import base64
 import subprocess
 from PIL import Image
 from google import genai
@@ -36,72 +37,204 @@ def split_text_into_two(text):
     return " ".join(words[:mid]), " ".join(words[mid:])
 
 
-def load_reference_images(image_urls):
+def load_reference_images_b64(image_urls):
     """
-    Charge les images via PIL — syntaxe exacte du notebook officiel Google.
-    types.VideoGenerationReferenceImage(image=pil_image, reference_type="asset")
+    Retourne une liste de dicts {bytesBase64Encoded, mimeType}
+    pour injection directe dans le payload REST.
     """
-    reference_images = []
+    refs = []
     if not isinstance(image_urls, list):
-        return reference_images
+        return refs
 
     for url in image_urls[:3]:
         try:
-            img_response = requests.get(url, timeout=15)
-            if img_response.status_code != 200:
-                print(f"HTTP {img_response.status_code} pour {url[:60]}")
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                print(f"HTTP {resp.status_code} pour {url[:60]}")
                 continue
 
-            pil_image = Image.open(io.BytesIO(img_response.content))
+            content_type = resp.headers.get('Content-Type', 'image/jpeg')
+            mime_type = content_type.split(';')[0].strip()
+            if mime_type not in ('image/jpeg', 'image/png', 'image/webp'):
+                mime_type = 'image/jpeg'
 
-            ref = types.VideoGenerationReferenceImage(
-                image=pil_image,
-                reference_type="asset",  # minuscules — syntaxe notebook officiel
-            )
-            reference_images.append(ref)
-            print(f"Image de référence chargée: {url[:60]}...")
+            # Convertir en JPEG via PIL pour normaliser le format
+            pil_img = Image.open(io.BytesIO(resp.content)).convert('RGB')
+            buf = io.BytesIO()
+            pil_img.save(buf, format='JPEG', quality=90)
+            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+
+            refs.append({
+                'bytesBase64Encoded': b64,
+                'mimeType': 'image/jpeg',
+            })
+            print(f"Image encodée en base64: {url[:60]}...")
 
         except Exception as e:
             print(f"Erreur image {url[:60]}: {e}")
 
-    return reference_images
+    return refs
 
 
-def wait_for_operation(client, op, timeout_seconds=700):
+def generate_video_rest(api_key, model, prompt, ref_images_b64, duration=8, aspect_ratio="16:9", resolution="720p"):
+    """
+    Appel REST direct à l'API Veo — évite les bugs du SDK Python.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateVideos?key={api_key}"
+
+    instances = [{"prompt": prompt}]
+
+    if ref_images_b64:
+        instances[0]["referenceImages"] = [
+            {
+                "referenceImage": {
+                    "bytesBase64Encoded": ref['bytesBase64Encoded'],
+                    "mimeType": ref['mimeType'],
+                },
+                "referenceType": "ASSET",
+            }
+            for ref in ref_images_b64
+        ]
+
+    payload = {
+        "instances": instances,
+        "parameters": {
+            "aspectRatio": aspect_ratio,
+            "durationSeconds": duration,
+            "resolution": resolution,
+        }
+    }
+
+    resp = requests.post(url, json=payload, timeout=60)
+
+    if not resp.ok:
+        print(f"Erreur API REST: {resp.status_code} — {resp.text[:500]}")
+        return None
+
+    data = resp.json()
+    operation_name = data.get('name')
+    if not operation_name:
+        print(f"Pas de operation name dans la réponse: {data}")
+        return None
+
+    print(f"Opération démarrée: {operation_name}")
+    return operation_name
+
+
+def poll_operation(api_key, operation_name, timeout_seconds=700):
+    """
+    Polling de l'opération via REST.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/{operation_name}?key={api_key}"
     elapsed = 0
-    while not op.done:
+
+    while elapsed < timeout_seconds:
         time.sleep(20)
         elapsed += 20
-        if elapsed > timeout_seconds:
-            print(f"Timeout après {timeout_seconds}s")
+
+        resp = requests.get(url, timeout=30)
+        if not resp.ok:
+            print(f"Erreur polling: {resp.status_code}")
+            continue
+
+        data = resp.json()
+        print(f"En attente... {elapsed}s — done: {data.get('done', False)}")
+
+        if data.get('done'):
+            if 'error' in data:
+                print(f"Erreur opération: {data['error']}")
+                return None
+
+            videos = data.get('response', {}).get('generatedVideos', [])
+            if videos:
+                return videos[0]
+            print(f"Réponse sans vidéo: {data}")
             return None
-        op = client.operations.get(op)
-        print(f"En attente... {elapsed}s écoulées")
 
-    if op.result and hasattr(op.result, 'generated_videos') and op.result.generated_videos:
-        return op.result.generated_videos[0]
-
-    if hasattr(op, 'error') and op.error:
-        print(f"Erreur opération: {op.error}")
+    print(f"Timeout après {timeout_seconds}s")
     return None
+
+
+def download_video(api_key, video_obj, output_path):
+    """
+    Télécharge la vidéo depuis l'URI retournée.
+    """
+    uri = video_obj.get('video', {}).get('uri') or video_obj.get('uri')
+    if not uri:
+        print(f"URI introuvable dans: {video_obj}")
+        return False
+
+    # Ajouter la clé API à l'URI
+    sep = '&' if '?' in uri else '?'
+    download_url = f"{uri}{sep}key={api_key}"
+
+    resp = requests.get(download_url, timeout=120, stream=True)
+    if not resp.ok:
+        print(f"Erreur téléchargement: {resp.status_code}")
+        return False
+
+    with open(output_path, 'wb') as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            f.write(chunk)
+
+    size = __import__('os').path.getsize(output_path)
+    print(f"Vidéo téléchargée: {output_path} ({size} bytes)")
+    return size > 10000
+
+
+def extend_video_rest(api_key, model, prompt, video_obj, duration=8, resolution="720p"):
+    """
+    Extension vidéo via REST — passe la vidéo source par URI.
+    """
+    video_uri = video_obj.get('video', {}).get('uri') or video_obj.get('uri')
+    if not video_uri:
+        print(f"URI vidéo source introuvable: {video_obj}")
+        return None
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateVideos?key={api_key}"
+
+    payload = {
+        "instances": [{
+            "prompt": prompt,
+            "video": {"uri": video_uri},
+        }],
+        "parameters": {
+            "durationSeconds": duration,
+            "resolution": resolution,
+            # aspect_ratio absent — hérité de la vidéo source
+        }
+    }
+
+    resp = requests.post(url, json=payload, timeout=60)
+
+    if not resp.ok:
+        print(f"Erreur extension REST: {resp.status_code} — {resp.text[:500]}")
+        return None
+
+    data = resp.json()
+    operation_name = data.get('name')
+    if not operation_name:
+        print(f"Pas de operation name: {data}")
+        return None
+
+    print(f"Extension démarrée: {operation_name}")
+    return operation_name
 
 
 def crop_to_portrait(input_file, output_file):
     """
-    Rogne une vidéo 16:9 en 9:16 en gardant le centre.
-    Formule : largeur_finale = hauteur * 9/16, centré horizontalement.
-    La qualité n'est pas dégradée — crop pur, pas de resize.
+    Rogne 16:9 → 9:16 en gardant le centre. Crop pur, pas de resize.
     """
     cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
         "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0",
-        "-c:a", "copy",  # audio non touché
+        "-c:a", "copy",
         output_file
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Erreur ffmpeg: {result.stderr}")
+        print(f"Erreur ffmpeg crop: {result.stderr[-300:]}")
         return False
     print(f"Crop 9:16 réussi → {output_file}")
     return True
@@ -112,14 +245,10 @@ def generate_video_with_refs():
         print("Usage: python generate_veo.py <api_key> <prompt> <image_urls_json> [aspect_ratio]")
         sys.exit(1)
 
-    api_key         = sys.argv[1]
-    full_prompt     = sys.argv[2]
-    image_urls      = json.loads(sys.argv[3])
-    # aspect_ratio ignoré — on génère toujours en 16:9 puis on crop en 9:16
-    output_filename = "final_video.mp4"
-    raw_filename    = "raw_16x9.mp4"
-
-    client = genai.Client(api_key=api_key)
+    api_key        = sys.argv[1]
+    full_prompt    = sys.argv[2]
+    image_urls     = json.loads(sys.argv[3])
+    output_file    = "final_video.mp4"
 
     # ── 1. Extraction ─────────────────────────────────────────────────────────
     extracted       = extract_parts(full_prompt)
@@ -131,128 +260,94 @@ def generate_video_with_refs():
     print(f"Voix-off partie 1 ({len(v1.split())} mots): {v1[:80]}...")
     print(f"Voix-off partie 2 ({len(v2.split())} mots): {v2[:80]}...")
 
-    # ── 2. Chargement images de référence ─────────────────────────────────────
-    reference_images = load_reference_images(image_urls)
-    print(f"{len(reference_images)} image(s) de référence chargée(s)")
+    # ── 2. Images de référence en base64 ──────────────────────────────────────
+    ref_images_b64 = load_reference_images_b64(image_urls)
+    print(f"{len(ref_images_b64)} image(s) de référence chargée(s)")
 
     # ── 3. Génération partie 1 — 8s en 16:9 ──────────────────────────────────
-    # CRITIQUE : on demande explicitement à Veo de centrer le sujet
-    # pour que le crop 9:16 soit parfait sans rien couper d'important
-    print(f"\nÉtape 1/2 — 8s en 16:9 (sera cropé en 9:16 après)")
+    print(f"\nÉtape 1/2 — 8s en 16:9 (sera cropé en 9:16)")
 
     prompt_1 = (
         f"LANDSCAPE 16:9 FORMAT. "
-        f"CRITICAL COMPOSITION RULE: Keep ALL subjects, products, and key visual elements "
-        f"STRICTLY CENTERED horizontally at all times. "
-        f"The left and right 25% of the frame must remain empty or with background only — "
-        f"because this video will be cropped to 9:16 portrait and only the CENTER will be kept. "
+        f"CRITICAL COMPOSITION: Keep ALL subjects and products STRICTLY CENTERED horizontally. "
+        f"Left and right 25% of frame must stay empty/background only "
+        f"(video will be cropped to 9:16 portrait, only center kept). "
         f"HOOK IN FIRST 2 SECONDS: immediate visual impact that stops scrolling. "
         f"VISUAL SCENARIO: {visual_scenario}. "
         f"AUDIO: narrator speaks ONLY this French text: '{v1}'. "
         f"Premium cinematic. Photorealistic. No floating text overlay. No watermark. "
-        f"Slow sensual camera movements. All movement stays center frame."
+        f"Slow sensual camera movements. All action stays center frame."
     )
 
-    # Modèle avec images de référence → veo-3.1-generate-preview (notebook officiel)
-    # Sans images → veo-3.1-fast-generate-preview
-    model_p1 = "veo-3.1-fast-generate-preview" if not reference_images else "veo-3.1-fast-generate-preview"
+    model = "veo-3.1-fast-generate-preview"
+    op1_name = generate_video_rest(api_key, model, prompt_1, ref_images_b64, duration=8, aspect_ratio="16:9")
 
-    op1 = client.models.generate_videos(
-        model=model_p1,
-        prompt=prompt_1,
-        config=types.GenerateVideosConfig(
-            reference_images=reference_images if reference_images else None,
-            duration_seconds=8,
-            aspect_ratio="16:9",
-            resolution="720p",
-        ),
-    )
+    if not op1_name:
+        print("Échec lancement étape 1")
+        sys.exit(1)
 
-    result1 = wait_for_operation(client, op1)
-    if not result1:
+    video1_obj = poll_operation(api_key, op1_name)
+    if not video1_obj:
         print("Échec étape 1")
         sys.exit(1)
 
-    client.files.download(file=result1.video)
-    result1.video.save("part1_16x9.mp4")
+    if not download_video(api_key, video1_obj, "part1_16x9.mp4"):
+        print("Échec téléchargement partie 1")
+        sys.exit(1)
+
     print("Étape 1 réussie. Pause 30s avant étape 2...")
     time.sleep(30)
 
-    # ── 4. Extension partie 2 — 8s en 16:9 ───────────────────────────────────
-    # Extension en 16:9 → fonctionne parfaitement (confirmé)
+    # ── 4. Extension partie 2 — 8s supplémentaires ───────────────────────────
     print(f"\nÉtape 2/2 — Extension 8s en 16:9")
 
     prompt_2 = (
         f"CONTINUE SEAMLESSLY from previous scene. LANDSCAPE 16:9 FORMAT. "
-        f"CRITICAL COMPOSITION RULE: Keep ALL subjects STRICTLY CENTERED horizontally. "
+        f"CRITICAL COMPOSITION: All subjects STRICTLY CENTERED horizontally. "
         f"Left and right 25% of frame = background only. "
         f"Build to emotional climax and clear call-to-action. "
         f"End with brand name elegant reveal at bottom center. "
         f"VISUAL: continue — {visual_scenario}. "
         f"AUDIO: narrator concludes ONLY: '{v2}'. "
-        f"No floating text overlay. Smooth invisible transition from previous clip."
+        f"No floating text overlay. Smooth invisible transition."
     )
 
-    op2 = client.models.generate_videos(
-        model="veo-3.1-fast-generate-preview",
-        prompt=prompt_2,
-        video=result1.video,
-        config=types.GenerateVideosConfig(
-            duration_seconds=8,
-            resolution="720p",
-            # aspect_ratio absent — hérité de la vidéo source 16:9
-        ),
-    )
+    op2_name = extend_video_rest(api_key, model, prompt_2, video1_obj, duration=8)
 
-    result2 = wait_for_operation(client, op2)
-    if not result2:
-        print("Étape 2 échouée — utilisation partie 1 uniquement")
-        # Crop direct de la partie 1
-        if crop_to_portrait("part1_16x9.mp4", output_filename):
-            print(f"Vidéo 9:16 (8s) sauvegardée → {output_filename}")
-            sys.exit(0)
-        sys.exit(1)
+    video2_obj = None
+    if op2_name:
+        video2_obj = poll_operation(api_key, op2_name)
 
-    # ── 5. Sauvegarde partie 2 ────────────────────────────────────────────────
-    try:
-        client.files.download(file=result2.video)
-        result2.video.save("part2_16x9.mp4")
-        print("Partie 2 téléchargée")
-    except Exception as e:
-        print(f"Erreur téléchargement partie 2: {e} — utilisation partie 1")
-        crop_to_portrait("part1_16x9.mp4", output_filename)
+    if not video2_obj or not download_video(api_key, video2_obj, "part2_16x9.mp4"):
+        print("Étape 2 échouée — crop partie 1 uniquement")
+        crop_to_portrait("part1_16x9.mp4", output_file)
         sys.exit(0)
 
-    # ── 6. Concaténation des deux parties ─────────────────────────────────────
-    print("\nConcaténation des deux parties 16:9...")
+    # ── 5. Concaténation ──────────────────────────────────────────────────────
+    print("\nConcaténation 16:9...")
     with open("filelist.txt", "w") as f:
         f.write("file 'part1_16x9.mp4'\n")
         f.write("file 'part2_16x9.mp4'\n")
 
-    concat_cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", "filelist.txt",
-        "-c", "copy",
-        raw_filename
-    ]
-    concat_result = subprocess.run(concat_cmd, capture_output=True, text=True)
+    concat = subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "filelist.txt", "-c", "copy", "raw_16x9.mp4"],
+        capture_output=True, text=True
+    )
 
-    if concat_result.returncode != 0:
-        print(f"Erreur concaténation: {concat_result.stderr}")
-        print("Fallback : crop partie 2 uniquement")
-        crop_to_portrait("part2_16x9.mp4", output_filename)
+    if concat.returncode != 0:
+        print(f"Erreur concat: {concat.stderr[-300:]}")
+        print("Fallback : crop partie 2")
+        crop_to_portrait("part2_16x9.mp4", output_file)
         sys.exit(0)
 
-    print(f"Concaténation réussie → {raw_filename} (16s en 16:9)")
+    print("Concaténation réussie — 16s en 16:9")
 
-    # ── 7. Crop final 16:9 → 9:16 ────────────────────────────────────────────
-    print("\nCrop ffmpeg 16:9 → 9:16 (centre)...")
-    if not crop_to_portrait(raw_filename, output_filename):
-        print("Erreur crop — fallback crop partie 1")
-        crop_to_portrait("part1_16x9.mp4", output_filename)
+    # ── 6. Crop final → 9:16 ─────────────────────────────────────────────────
+    print("\nCrop ffmpeg 16:9 → 9:16...")
+    if not crop_to_portrait("raw_16x9.mp4", output_file):
+        crop_to_portrait("part1_16x9.mp4", output_file)
 
-    print(f"\nSuccès ! Vidéo 9:16 de ~16s → {output_filename}")
+    print(f"\nSuccès ! Vidéo 9:16 ~16s → {output_file}")
 
 
 if __name__ == "__main__":
