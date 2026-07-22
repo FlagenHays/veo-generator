@@ -22,7 +22,7 @@ jobs:
         run: sudo apt-get install -y ffmpeg
 
       - name: Install Python Dependencies
-        run: pip install google-genai requests Pillow
+        run: pip install google-genai requests
 
       - name: Run Python Generator
         env:
@@ -31,8 +31,7 @@ jobs:
           python scripts/generate_veo.py \
             "$GEMINI_API_KEY" \
             "${{ github.event.client_payload.prompt }}" \
-            '${{ toJson(github.event.client_payload.images) }}' \
-            "${{ github.event.client_payload.aspect_ratio }}"
+            '${{ toJson(github.event.client_payload.images) }}'
 
       - name: Verify Video File
         run: |
@@ -46,10 +45,6 @@ jobs:
             echo "ERREUR : fichier trop petit"
             exit 1
           fi
-          # Vérification format 9:16 avec ffprobe
-          ffprobe -v error -select_streams v:0 \
-            -show_entries stream=width,height \
-            -of csv=p=0 final_video.mp4
 
       - name: Send Video Back to Hostinger
         if: success()
