@@ -97,16 +97,24 @@ def download_video(client, video_obj, output_path):
 
 
 def crop_to_portrait(input_file, output_file):
+    """
+    Crop centre 9:16 depuis une source 16:9.
+    On extrait la bande centrale : largeur = hauteur * 9/16, centrée horizontalement.
+    Filtre scale2ref évité — crop simple et précis.
+    """
     cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
         "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0",
+        "-c:v", "libx264",
+        "-preset", "slow",        # meilleure qualité d'encodage
+        "-crf", "16",             # quasi-lossless (0=parfait, 18=excellent, 23=défaut)
         "-c:a", "copy",
         output_file
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Erreur ffmpeg: {result.stderr[-300:]}")
+        print(f"Erreur ffmpeg crop: {result.stderr[-300:]}")
         return False
     import os
     size = os.path.getsize(output_file)
@@ -131,7 +139,7 @@ def generate_video_with_refs():
     visual_scenario = extracted["scenario"] or full_prompt
     v1, v2          = split_text_into_two(extracted["voice_over"])
 
-    print(f"Stratégie: 16:9 SDK → 1 extension 16:9 → crop ffmpeg → 9:16")
+    print(f"Stratégie: 16:9 SDK → 1 extension 16:9 → crop ffmpeg CRF16 → 9:16")
     print(f"Scénario: {visual_scenario[:120]}...")
     print(f"V1 ({len(v1.split())} mots): {v1[:80]}...")
     print(f"V2 ({len(v2.split())} mots): {v2[:80]}...")
@@ -141,17 +149,36 @@ def generate_video_with_refs():
     print(f"{len(reference_images)} image(s) de référence chargée(s)")
 
     # ── 3. Génération partie 1 — 8s en 16:9 ──────────────────────────────────
-    print(f"\nÉtape 1/2 — 8s en 16:9")
+    # RÈGLE DE COMPOSITION :
+    # La vidéo finale sera rognée à la bande centrale (56% de la largeur 16:9).
+    # Tout sujet, produit ou personnage DOIT rester dans cette bande centrale.
+    # Les 22% gauche et droite seront coupés — ils ne doivent contenir que
+    # du décor, fond ou éléments secondaires.
+    # Le prompt doit décrire la scène COMME SI elle était filmée en 9:16 :
+    # cadrages serrés, portrait vertical, plan américain ou rapproché.
+    print(f"\nÉtape 1/2 — 8s en 16:9 (composition 9:16 native)")
 
     prompt_1 = (
-        f"LANDSCAPE 16:9 FORMAT. "
-        f"CRITICAL COMPOSITION: Keep ALL subjects and products STRICTLY CENTERED horizontally. "
-        f"Left and right 25% of frame must stay background only "
-        f"(will be cropped to 9:16, only center kept). "
-        f"HOOK IN FIRST 2 SECONDS: immediate visual impact. "
-        f"VISUAL SCENARIO: {visual_scenario}. "
-        f"AUDIO: narrator speaks ONLY this French text: '{v1}'. "
-        f"Premium cinematic. Photorealistic. No floating text. No watermark."
+        # ── Contrainte de format et de crop ──────────────────────────────────
+        "TECHNICAL REQUIREMENT — READ BEFORE GENERATING: "
+        "This 16:9 video will be cropped to 9:16 by cutting the left 22% and right 22% of the frame. "
+        "Only the CENTER 56% of the horizontal width will survive. "
+        "THEREFORE: compose this scene AS IF you are shooting in 9:16 portrait format. "
+        "Every subject, person, and product MUST be framed entirely within the center 56% of the frame at ALL times. "
+        "Use portrait-style framing: tight vertical shots, close-ups, medium shots (waist-up), "
+        "vertical movement (top-to-bottom), never horizontal panning. "
+        "Camera movements allowed: slow zoom in/out, tilt up/down, gentle vertical tracking. "
+        "FORBIDDEN: horizontal pan, subjects moving left/right out of center, wide landscape shots. "
+        # ── Qualité ───────────────────────────────────────────────────────────
+        "QUALITY: 4K cinematic, ultra-sharp focus on subjects, no motion blur, "
+        "no grain, no artifacts, clean crisp image. "
+        "Professional studio or location lighting. Photorealistic. "
+        "FORBIDDEN: floating text, watermark, subtitles, logo overlays, cartoon, CGI. "
+        # ── Scénario ─────────────────────────────────────────────────────────
+        f"VISUAL SCENARIO (first half): {visual_scenario}. "
+        "HOOK: immediate visual impact in first 2 seconds — draw viewer's eye to subject. "
+        # ── Audio ─────────────────────────────────────────────────────────────
+        f"AUDIO: narrator speaks ONLY this French text: '{v1}'."
     )
 
     op1 = client.models.generate_videos(
@@ -178,16 +205,24 @@ def generate_video_with_refs():
     time.sleep(30)
 
     # ── 4. UNE SEULE extension — 8s en 16:9 ──────────────────────────────────
-    print(f"\nÉtape 2/2 — Extension 8s en 16:9")
+    print(f"\nÉtape 2/2 — Extension 8s en 16:9 (même contrainte de composition)")
 
     prompt_2 = (
-        f"CONTINUE SEAMLESSLY. LANDSCAPE 16:9. "
-        f"ALL subjects STRICTLY CENTERED horizontally. "
-        f"Left/right 25% background only. "
-        f"Build to climax and CTA. Brand name reveal bottom center. "
-        f"VISUAL: continue — {visual_scenario}. "
-        f"AUDIO: narrator concludes ONLY: '{v2}'. "
-        f"No floating text. Smooth transition."
+        # ── Contrainte de crop — répétée pour l'extension ────────────────────
+        "CONTINUE SEAMLESSLY FROM PREVIOUS CLIP. "
+        "SAME TECHNICAL REQUIREMENT: video will be cropped to center 56% horizontally (9:16 final). "
+        "ALL subjects MUST remain in the center 56% of frame. "
+        "Portrait-style framing: tight vertical shots, no horizontal pan. "
+        "Camera: slow zoom or gentle vertical movement only. "
+        # ── Qualité ───────────────────────────────────────────────────────────
+        "Ultra-sharp, clean image, no motion blur, photorealistic, cinematic lighting. "
+        "FORBIDDEN: floating text, watermark, subtitles, horizontal pan. "
+        # ── Scénario ─────────────────────────────────────────────────────────
+        f"VISUAL: build to climax — {visual_scenario}. "
+        "End with strong CTA moment: subject looks directly at camera, confident, engaging. "
+        "Brand/product clearly visible at center bottom of frame (within safe zone). "
+        # ── Audio ─────────────────────────────────────────────────────────────
+        f"AUDIO: narrator concludes ONLY: '{v2}'."
     )
 
     op2 = client.models.generate_videos(
@@ -227,8 +262,8 @@ def generate_video_with_refs():
 
     print("Concaténation réussie — ~16s en 16:9")
 
-    # ── 6. Crop final → 9:16 ─────────────────────────────────────────────────
-    print("\nCrop 16:9 → 9:16...")
+    # ── 6. Crop final → 9:16 avec encodage haute qualité ─────────────────────
+    print("\nCrop 16:9 → 9:16 (CRF 16, preset slow)...")
     if not crop_to_portrait("raw_16x9.mp4", output_file):
         crop_to_portrait("part1_16x9.mp4", output_file)
 
