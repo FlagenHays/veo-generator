@@ -382,36 +382,21 @@ def generate_video_with_refs():
 
     video2 = wait_for_op(client, op2)
 
-    if not video2 or not download_video(client, video2, "part2_16x9.mp4"):
+    if not video2 or not download_video(client, video2, "raw_16x9.mp4"):
         print("Extension échouée — crop partie 1 uniquement (8s)")
         crop_to_portrait("part1_16x9.mp4", output_file)
         sys.exit(0)
 
-    # ── 6. Concaténation part1 + part2 ───────────────────────────────────────
-    print("\nConcaténation des deux parties...")
-    with open("filelist.txt", "w") as f:
-        f.write("file 'part1_16x9.mp4'\n")
-        f.write("file 'part2_16x9.mp4'\n")
+    # video2 contient DÉJÀ la vidéo complète (part1 + extension = ~15s)
+    # Veo retourne la vidéo combinée — pas besoin de concaténer avec ffmpeg
+    print("Extension reçue — vidéo complète ~15s en 16:9")
 
-    concat = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", "filelist.txt", "-c", "copy", "raw_16x9.mp4"],
-        capture_output=True, text=True
-    )
-
-    if concat.returncode != 0:
-        print(f"Erreur concat: {concat.stderr[-300:]}")
-        crop_to_portrait("part2_16x9.mp4", output_file)
-        sys.exit(0)
-
-    print("Concaténation réussie — ~16s en 16:9")
-
-    # ── 7. Crop final → 9:16 haute qualité ───────────────────────────────────
+    # ── 6. Crop final → 9:16 haute qualité ───────────────────────────────────
     print("\nCrop 16:9 → 9:16 (CRF 16, preset slow)...")
     if not crop_to_portrait("raw_16x9.mp4", output_file):
         crop_to_portrait("part1_16x9.mp4", output_file)
 
-    print(f"\nSuccès ! Vidéo 9:16 ~16s → {output_file}")
+    print(f"\nSuccès ! Vidéo 9:16 ~15s → {output_file}")
 
 
 if __name__ == "__main__":
