@@ -27,11 +27,12 @@ jobs:
       - name: Run Python Generator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Valeurs passées par variables d'environnement : JAMAIS interpolées dans le script shell
+          # (sinon un prompt contenant " ou $( ) exécuterait du code avec accès aux secrets).
+          VEO_PROMPT: ${{ github.event.client_payload.prompt }}
+          VEO_IMAGES: ${{ toJson(github.event.client_payload.images) }}
         run: |
-          python scripts/generate_veo.py \
-            "$GEMINI_API_KEY" \
-            "${{ github.event.client_payload.prompt }}" \
-            '${{ toJson(github.event.client_payload.images) }}'
+          python scripts/generate_veo.py "$GEMINI_API_KEY" "$VEO_PROMPT" "$VEO_IMAGES"
 
       - name: Verify Video File
         run: |
@@ -48,22 +49,34 @@ jobs:
 
       - name: Send Video Back to Hostinger
         if: success()
+        env:
+          WEBHOOK_URL: ${{ github.event.client_payload.webhook_url }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          VID_UUID: ${{ github.event.client_payload.uuid }}
+          VID_CAMPAGNE: ${{ github.event.client_payload.campagne_id }}
         run: |
-          curl -X POST "${{ github.event.client_payload.webhook_url }}" \
-            -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
+          case "$WEBHOOK_URL" in https://igrise.com/*|https://www.igrise.com/*) ;; *) echo "webhook_url refusée"; exit 1;; esac
+          curl -X POST "$WEBHOOK_URL" \
+            -H "X-Webhook-Token: $WEBHOOK_SECRET" \
             -F "video=@final_video.mp4" \
-            -F "uuid=${{ github.event.client_payload.uuid }}" \
-            -F "campagne_id=${{ github.event.client_payload.campagne_id }}" \
+            -F "uuid=$VID_UUID" \
+            -F "campagne_id=$VID_CAMPAGNE" \
             --max-time 120 \
             --retry 3 \
             --retry-delay 10
 
       - name: Notify Failure
         if: failure()
+        env:
+          WEBHOOK_URL: ${{ github.event.client_payload.webhook_url }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          VID_UUID: ${{ github.event.client_payload.uuid }}
+          VID_CAMPAGNE: ${{ github.event.client_payload.campagne_id }}
         run: |
-          curl -X POST "${{ github.event.client_payload.webhook_url }}" \
-            -H "X-Webhook-Token: ${{ secrets.WEBHOOK_SECRET }}" \
+          case "$WEBHOOK_URL" in https://igrise.com/*|https://www.igrise.com/*) ;; *) echo "webhook_url refusée"; exit 0;; esac
+          curl -X POST "$WEBHOOK_URL" \
+            -H "X-Webhook-Token: $WEBHOOK_SECRET" \
             -F "error=generation_failed" \
-            -F "uuid=${{ github.event.client_payload.uuid }}" \
-            -F "campagne_id=${{ github.event.client_payload.campagne_id }}" \
+            -F "uuid=$VID_UUID" \
+            -F "campagne_id=$VID_CAMPAGNE" \
             --max-time 30 || true
